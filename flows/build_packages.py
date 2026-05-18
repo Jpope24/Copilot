@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Build Power Automate import packages (.zip) for the Stablecoin Research Agent flows.
+Build Power Automate import packages (.zip) for the Stablecoin and Stapleton Research Agent flows.
 
 Output:
   flows/packages/Shared-FormatStablecoinReport.zip
   flows/packages/Shared-StablecoinEmailFlow.zip
+  flows/packages/Shared-FormatStapletonReport.zip
 
 Each zip follows the Power Automate export package structure:
   manifest.json
@@ -15,15 +16,19 @@ import json
 import zipfile
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT  = os.path.dirname(SCRIPT_DIR)
-PACKAGES   = os.path.join(SCRIPT_DIR, "packages")
-TEMPLATE   = os.path.join(REPO_ROOT, "templates", "stablecoin-report.html")
+SCRIPT_DIR         = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT          = os.path.dirname(SCRIPT_DIR)
+PACKAGES           = os.path.join(SCRIPT_DIR, "packages")
+TEMPLATE           = os.path.join(REPO_ROOT, "templates", "stablecoin-report.html")
+STAPLETON_TEMPLATE = os.path.join(REPO_ROOT, "templates", "stapleton-report.html")
 
 os.makedirs(PACKAGES, exist_ok=True)
 
 with open(TEMPLATE, "r", encoding="utf-8") as fh:
     HTML_TEMPLATE = fh.read()
+
+with open(STAPLETON_TEMPLATE, "r", encoding="utf-8") as fh:
+    STAPLETON_HTML = fh.read()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -532,4 +537,294 @@ write_zip(
     FLOW2_GUID, flow2_manifest, flow2_def_envelope
 )
 
-print("Done — both packages ready in flows/packages/")
+print("Done — Flow 1 & 2 packages ready in flows/packages/")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FLOW 3 — Shared-FormatStapletonReport
+# ═════════════════════════════════════════════════════════════════════════════
+FLOW3_GUID    = "c3d4e5f6-a7b8-9012-cdef-012345678902"
+FLOW3_DISPLAY = "Shared-FormatStapletonReport"
+FLOW3_DESC    = (
+    "Accepts structured Stapleton community research JSON and returns a rendered "
+    "HTML email body. Reusable by any Copilot Studio agent or Power Automate flow."
+)
+
+flow3_workflow = {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/"
+               "schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "$connections":    {"defaultValue": {}, "type": "Object"},
+        "$authentication": {"defaultValue": {}, "type": "SecureObject"}
+    },
+    "triggers": {
+        "manual": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+                "schema": {
+                    "type": "object",
+                    "required": [
+                        "reportDate", "windowStart", "windowEnd",
+                        "executiveSummary", "developments", "realEstateSnapshot"
+                    ],
+                    "properties": {
+                        "reportDate":       {"type": "string"},
+                        "windowStart":      {"type": "string"},
+                        "windowEnd":        {"type": "string"},
+                        "generatedAt":      {"type": "string"},
+                        "executiveSummary": {"type": "string"},
+                        "developments": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "category":    {"type": "string"},
+                                    "title":       {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "source":      {"type": "string"},
+                                    "publishedAt": {"type": "string"},
+                                    "impact":      {"type": "string"}
+                                }
+                            }
+                        },
+                        "realEstateSnapshot": {
+                            "type": "object",
+                            "properties": {
+                                "medianListPrice":   {"type": "number"},
+                                "priceChangePct":    {"type": "number"},
+                                "activeListings":    {"type": "number"},
+                                "listingsChangePct": {"type": "number"},
+                                "avgDaysOnMarket":   {"type": "number"},
+                                "newListings24h":    {"type": "number"}
+                            }
+                        },
+                        "events": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title":       {"type": "string"},
+                                    "date":        {"type": "string"},
+                                    "location":    {"type": "string"},
+                                    "description": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "actions": {
+        # ── Variables ──────────────────────────────────────────────────────
+        "Init_DevItems": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "devItemsHtml", "type": "string", "value": ""}]
+            },
+            "runAfter": {}
+        },
+        "Init_EventItems": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "eventItemsHtml", "type": "string", "value": ""}]
+            },
+            "runAfter": {"Init_DevItems": ["Succeeded"]}
+        },
+
+        # ── Embed Stapleton HTML template ──────────────────────────────────
+        "HTML_Template": {
+            "type": "Compose",
+            "inputs": STAPLETON_HTML,
+            "runAfter": {"Init_EventItems": ["Succeeded"]}
+        },
+
+        # ── Build development item cards ───────────────────────────────────
+        "Build_Dev_Items": {
+            "type": "Foreach",
+            "foreach": "@triggerBody()?['developments']",
+            "runAfter": {"HTML_Template": ["Succeeded"]},
+            "actions": {
+                "Category_Badge": {
+                    "type": "Compose",
+                    "runAfter": {},
+                    "inputs": (
+                        "@if(equals(items('Build_Dev_Items')?['category'], 'real-estate'),"
+                        " '<span class=\"badge badge-real-estate\">Real Estate</span>',"
+                        " if(equals(items('Build_Dev_Items')?['category'], 'infrastructure'),"
+                        " '<span class=\"badge badge-infrastructure\">Infrastructure</span>',"
+                        " if(equals(items('Build_Dev_Items')?['category'], 'community'),"
+                        " '<span class=\"badge badge-community\">Community</span>',"
+                        " if(equals(items('Build_Dev_Items')?['category'], 'business'),"
+                        " '<span class=\"badge badge-business\">Business</span>',"
+                        " if(equals(items('Build_Dev_Items')?['category'], 'safety'),"
+                        " '<span class=\"badge badge-safety\">&#9888; Safety</span>',"
+                        " '<span class=\"badge badge-government\">Government</span>')))))"
+                    )
+                },
+                "Impact_Label": {
+                    "type": "Compose",
+                    "runAfter": {"Category_Badge": ["Succeeded"]},
+                    "inputs": (
+                        "@if(equals(items('Build_Dev_Items')?['impact'], 'high'),"
+                        " '<span class=\"impact-high\">&#9650; High Impact</span>',"
+                        " if(equals(items('Build_Dev_Items')?['impact'], 'medium'),"
+                        " '<span class=\"impact-medium\">&#9654; Medium Impact</span>',"
+                        " '<span class=\"impact-low\">&#9658; Low Impact</span>'))"
+                    )
+                },
+                "Dev_Html": {
+                    "type": "Compose",
+                    "runAfter": {"Impact_Label": ["Succeeded"]},
+                    "inputs": (
+                        "@concat('<div class=\"dev-item\"><div class=\"dev-header\">',"
+                        " outputs('Category_Badge'), ' ', outputs('Impact_Label'),"
+                        " '</div><p class=\"dev-title\">',"
+                        " items('Build_Dev_Items')?['title'],"
+                        " '</p><p class=\"dev-meta\">Source: ',"
+                        " items('Build_Dev_Items')?['source'],"
+                        " ' &nbsp;&middot;&nbsp; ',"
+                        " items('Build_Dev_Items')?['publishedAt'],"
+                        " '</p><p class=\"dev-body\">',"
+                        " items('Build_Dev_Items')?['description'],"
+                        " '</p></div>')"
+                    )
+                },
+                "Append_Dev": {
+                    "type": "AppendToStringVariable",
+                    "runAfter": {"Dev_Html": ["Succeeded"]},
+                    "inputs": {"name": "devItemsHtml", "value": "@outputs('Dev_Html')"}
+                }
+            }
+        },
+
+        # ── Build event list items ─────────────────────────────────────────
+        "Build_Event_Items": {
+            "type": "Foreach",
+            "foreach": "@triggerBody()?['events']",
+            "runAfter": {"Build_Dev_Items": ["Succeeded"]},
+            "actions": {
+                "Event_Html": {
+                    "type": "Compose",
+                    "runAfter": {},
+                    "inputs": (
+                        "@concat('<div class=\"event-item\"><div class=\"event-date-box\">',"
+                        " '<span class=\"ev-month\">', substring(items('Build_Event_Items')?['date'], 0, 3), '</span>',"
+                        " '<span class=\"ev-day\">', substring(items('Build_Event_Items')?['date'], 4, 2), '</span>',"
+                        " '</div><div class=\"event-details\">',"
+                        " '<p class=\"ev-title\">', items('Build_Event_Items')?['title'], '</p>',"
+                        " '<p class=\"ev-location\">', items('Build_Event_Items')?['location'], '</p>',"
+                        " '<p class=\"ev-desc\">', coalesce(items('Build_Event_Items')?['description'], ''), '</p>',"
+                        " '</div></div>')"
+                    )
+                },
+                "Append_Event": {
+                    "type": "AppendToStringVariable",
+                    "runAfter": {"Event_Html": ["Succeeded"]},
+                    "inputs": {"name": "eventItemsHtml", "value": "@outputs('Event_Html')"}
+                }
+            }
+        },
+
+        # ── Fallback for empty events ──────────────────────────────────────
+        "Events_Or_Placeholder": {
+            "type": "Compose",
+            "runAfter": {"Build_Event_Items": ["Succeeded"]},
+            "inputs": "@if(empty(variables('eventItemsHtml')), '<p class=\"no-events\">No community events scheduled in the next 14 days.</p>', variables('eventItemsHtml'))"
+        },
+
+        # ── Compute real estate delta strings and CSS classes ──────────────
+        "RE_PriceClass": {
+            "type": "Compose",
+            "runAfter": {"Events_Or_Placeholder": ["Succeeded"]},
+            "inputs": "@if(greaterOrEquals(triggerBody()?['realEstateSnapshot']?['priceChangePct'], 0), 're-up', 're-down')"
+        },
+        "RE_PriceChange": {
+            "type": "Compose",
+            "runAfter": {"RE_PriceClass": ["Succeeded"]},
+            "inputs": "@concat(if(greaterOrEquals(triggerBody()?['realEstateSnapshot']?['priceChangePct'], 0), '+', ''), string(triggerBody()?['realEstateSnapshot']?['priceChangePct']), '% vs yesterday')"
+        },
+        "RE_ListingsClass": {
+            "type": "Compose",
+            "runAfter": {"RE_PriceChange": ["Succeeded"]},
+            "inputs": "@if(greaterOrEquals(triggerBody()?['realEstateSnapshot']?['listingsChangePct'], 0), 're-up', 're-down')"
+        },
+        "RE_ListingsChange": {
+            "type": "Compose",
+            "runAfter": {"RE_ListingsClass": ["Succeeded"]},
+            "inputs": "@concat(if(greaterOrEquals(triggerBody()?['realEstateSnapshot']?['listingsChangePct'], 0), '+', ''), string(triggerBody()?['realEstateSnapshot']?['listingsChangePct']), '% vs yesterday')"
+        },
+
+        # ── Inject all values into template ───────────────────────────────
+        "R1":  {"type": "Compose", "runAfter": {"RE_ListingsChange": ["Succeeded"]},
+                "inputs": "@replace(string(outputs('HTML_Template')), '{{REPORT_DATE}}', triggerBody()?['reportDate'])"},
+        "R2":  {"type": "Compose", "runAfter": {"R1": ["Succeeded"]},
+                "inputs": "@replace(outputs('R1'), '{{WINDOW_START}}', triggerBody()?['windowStart'])"},
+        "R3":  {"type": "Compose", "runAfter": {"R2": ["Succeeded"]},
+                "inputs": "@replace(outputs('R2'), '{{WINDOW_END}}', triggerBody()?['windowEnd'])"},
+        "R4":  {"type": "Compose", "runAfter": {"R3": ["Succeeded"]},
+                "inputs": "@replace(outputs('R3'), '{{GENERATED_AT}}', coalesce(triggerBody()?['generatedAt'], utcNow()))"},
+        "R5":  {"type": "Compose", "runAfter": {"R4": ["Succeeded"]},
+                "inputs": "@replace(outputs('R4'), '{{DEV_COUNT}}', string(length(triggerBody()?['developments'])))"},
+        "R6":  {"type": "Compose", "runAfter": {"R5": ["Succeeded"]},
+                "inputs": "@replace(outputs('R5'), '{{EXECUTIVE_SUMMARY}}', triggerBody()?['executiveSummary'])"},
+        "R7":  {"type": "Compose", "runAfter": {"R6": ["Succeeded"]},
+                "inputs": "@replace(outputs('R6'), '{{DEVELOPMENT_ITEMS}}', variables('devItemsHtml'))"},
+        "R8":  {"type": "Compose", "runAfter": {"R7": ["Succeeded"]},
+                "inputs": "@replace(outputs('R7'), '{{RE_MEDIAN_PRICE}}', concat('$', string(triggerBody()?['realEstateSnapshot']?['medianListPrice'])))"},
+        "R9":  {"type": "Compose", "runAfter": {"R8": ["Succeeded"]},
+                "inputs": "@replace(outputs('R8'), '{{RE_PRICE_CLASS}}', outputs('RE_PriceClass'))"},
+        "R10": {"type": "Compose", "runAfter": {"R9": ["Succeeded"]},
+                "inputs": "@replace(outputs('R9'), '{{RE_PRICE_CHANGE}}', outputs('RE_PriceChange'))"},
+        "R11": {"type": "Compose", "runAfter": {"R10": ["Succeeded"]},
+                "inputs": "@replace(outputs('R10'), '{{RE_ACTIVE_LISTINGS}}', string(triggerBody()?['realEstateSnapshot']?['activeListings']))"},
+        "R12": {"type": "Compose", "runAfter": {"R11": ["Succeeded"]},
+                "inputs": "@replace(outputs('R11'), '{{RE_LISTINGS_CLASS}}', outputs('RE_ListingsClass'))"},
+        "R13": {"type": "Compose", "runAfter": {"R12": ["Succeeded"]},
+                "inputs": "@replace(outputs('R12'), '{{RE_LISTINGS_CHANGE}}', outputs('RE_ListingsChange'))"},
+        "R14": {"type": "Compose", "runAfter": {"R13": ["Succeeded"]},
+                "inputs": "@replace(outputs('R13'), '{{RE_AVG_DAYS}}', string(triggerBody()?['realEstateSnapshot']?['avgDaysOnMarket']))"},
+        "R15": {"type": "Compose", "runAfter": {"R14": ["Succeeded"]},
+                "inputs": "@replace(outputs('R14'), '{{RE_NEW_CLASS}}', 're-up')"},
+        "R16": {"type": "Compose", "runAfter": {"R15": ["Succeeded"]},
+                "inputs": "@replace(outputs('R15'), '{{RE_NEW_LISTINGS}}', string(triggerBody()?['realEstateSnapshot']?['newListings24h']))"},
+        "R17": {"type": "Compose", "runAfter": {"R16": ["Succeeded"]},
+                "inputs": "@replace(outputs('R16'), '{{EVENT_ITEMS}}', outputs('Events_Or_Placeholder'))"},
+
+        # ── Return rendered HTML ───────────────────────────────────────────
+        "Respond": {
+            "type": "Response",
+            "runAfter": {"R17": ["Succeeded"]},
+            "inputs": {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                    "htmlBody":   "@outputs('R17')",
+                    "devCount":   "@length(triggerBody()?['developments'])",
+                    "eventCount": "@length(triggerBody()?['events'])"
+                }
+            }
+        }
+    },
+    "outputs": {}
+}
+
+flow3_def_envelope = definition_envelope(
+    FLOW3_GUID, FLOW3_DISPLAY, FLOW3_DESC, flow3_workflow
+)
+flow3_manifest = manifest(
+    FLOW3_DISPLAY, FLOW3_DESC, FLOW3_GUID,
+    resource_key="formatstapletonreport",
+    workflow_def=flow3_workflow,
+    connection_refs={},
+    telemetry_guid="e5f6a7b8-c9d0-1234-efab-234567890123"
+)
+
+write_zip(
+    os.path.join(PACKAGES, "Shared-FormatStapletonReport.zip"),
+    FLOW3_GUID, flow3_manifest, flow3_def_envelope
+)
+
+print("Done — all 3 packages ready in flows/packages/")
