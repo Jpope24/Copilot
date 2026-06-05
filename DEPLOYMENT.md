@@ -111,46 +111,35 @@ if needed.
 
 ---
 
-### Option 2 — Create flows inside a Power Apps Solution (no zip needed)
+### Option 2 — Create flows directly in Power Automate (no zip, no Solutions needed)
 
-This is the recommended path if the admin setting stays on. Creating flows
-directly inside a solution satisfies the requirement without needing any package
-import at all. Follow this process for **each** of the three flows.
+> **If you don't see "Solutions" in make.powerapps.com, skip it entirely.**
+> The Solutions sidebar requires a Dataverse-provisioned environment. You don't
+> need it. The admin setting only blocks *importing* zip packages — **creating
+> flows from scratch still works**. Flows you create this way are automatically
+> placed in the Default Solution behind the scenes, which satisfies the admin
+> requirement without you having to interact with Solutions at all.
 
-#### Step O2-1 — Create a new solution
+Go to **[make.powerautomate.com](https://make.powerautomate.com)** and create
+each flow by hand using the steps below. No zip file, no Solutions page needed.
 
-1. Go to [make.powerapps.com](https://make.powerapps.com)
-2. Confirm you are in the correct environment (top-right environment selector)
-3. Click **Solutions** in the left sidebar
-4. Click **+ New solution**
-5. Fill in the fields:
+#### How to start each flow
 
-| Field | Value |
+| Flow | Start with |
 |---|---|
-| Display name | `Research Agent Flows` |
-| Name | `ResearchAgentFlows` (auto-filled, no spaces) |
-| Publisher | Select your org's publisher, or click **+ New publisher** and create one with prefix `ra` |
-| Version | `1.0.0.0` |
+| `Shared-StablecoinEmailFlow` | **+ Create** → **Instant cloud flow** → name it → choose **"When a HTTP request is received"** trigger |
+| `Shared-FormatResearchReport` | **+ Create** → **Instant cloud flow** → name it → choose **"When a HTTP request is received"** trigger |
+| `Shared-ResearchAgentScheduler` | **+ Create** → **Scheduled cloud flow** → name it → set interval to 1 Day |
 
-6. Click **Create**
+Then build each flow action-by-action using the steps below.
 
-#### Step O2-2 — Add each flow to the solution
-
-For each flow, follow these steps:
-
-1. Open the `Research Agent Flows` solution
-2. Click **+ New** → **Automation** → **Cloud flow** → **Instant** (for
-   format and email flows) or **Scheduled** (for the scheduler flow)
-3. Build the flow following the **manual creation steps** below
-4. Save — the flow is automatically part of the solution
-
-#### Step O2-3 — Manual creation: Shared-StablecoinEmailFlow
+#### Step O2-1 — Manual creation: Shared-StablecoinEmailFlow
 
 > **Reference file:** `flows/Shared-StablecoinEmailFlow.json`
 
 This flow receives an HTML body + subject + recipient lists and sends an email.
 
-1. In your solution, **+ New → Automation → Cloud flow → Instant**
+1. **+ Create** → **Instant cloud flow**
 2. Name it `Shared-StablecoinEmailFlow`
 3. Choose trigger: **When a HTTP request is received** → click **Create**
 
@@ -222,14 +211,14 @@ Click the trigger step → **Add JSON schema** → paste:
 }
 ```
 
-#### Step O2-4 — Manual creation: Shared-FormatResearchReport
+#### Step O2-2 — Manual creation: Shared-FormatResearchReport
 
 > **Reference file:** `flows/Shared-FormatResearchReport.json`
 > **Template file:** `templates/research-report.html`
 
 This flow builds the HTML email from the agent's research payload.
 
-1. In your solution, **+ New → Automation → Cloud flow → Instant**
+1. **+ Create** → **Instant cloud flow**
 2. Name it `Shared-FormatResearchReport`
 3. Trigger: **When a HTTP request is received**
 
@@ -384,11 +373,11 @@ placeholder in the HTML. Name them R1 through R9:
 
 4. Save and copy the HTTP trigger URL.
 
-#### Step O2-5 — Manual creation: Shared-ResearchAgentScheduler
+#### Step O2-3 — Manual creation: Shared-ResearchAgentScheduler
 
 > **Reference file:** `flows/Shared-ResearchAgentScheduler.json`
 
-1. In your solution, **+ New → Automation → Cloud flow → Scheduled**
+1. **+ Create** → **Scheduled cloud flow**
 2. Name it `Shared-ResearchAgentScheduler`
 3. Set schedule: Starting **today**, Repeat every **1 Day**
 4. Click **Create**
@@ -460,7 +449,7 @@ Value: *(the HTTP trigger URL from Step O2-3)*
 
 6. Save and turn the flow **On**.
 
-After completing Steps O2-3 through O2-5, skip Parts 2–5 below and
+After completing Steps O2-1 through O2-3, skip Parts 2–5 below and
 continue directly with [Part 6 — Configure & Test End-to-End](#part-6--configure--test-end-to-end).
 
 ---
