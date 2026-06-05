@@ -4,17 +4,18 @@
 
 1. [Repository Layout](#repository-layout)
 2. [Prerequisites](#prerequisites)
-3. [Part 1 — Build the Import Packages](#part-1--build-the-import-packages)
-4. [Part 2 — Deploy the Email Flow (Shared-StablecoinEmailFlow)](#part-2--deploy-the-email-flow)
-5. [Part 3 — Deploy the Format Flow (Shared-FormatResearchReport)](#part-3--deploy-the-format-flow)
-6. [Part 4 — Create the Research Agent in Copilot Studio](#part-4--create-the-research-agent-in-copilot-studio)
-7. [Part 5 — Deploy the Scheduler Flow (Shared-ResearchAgentScheduler)](#part-5--deploy-the-scheduler-flow)
-8. [Part 6 — Configure & Test End-to-End](#part-6--configure--test-end-to-end)
-9. [Changing the Research Topic](#changing-the-research-topic)
-10. [Changing Email Recipients](#changing-email-recipients)
-11. [Running Multiple Topics](#running-multiple-topics)
-12. [Troubleshooting](#troubleshooting)
-13. [Stablecoin & Stapleton Agent Deployment](#stablecoin--stapleton-agent-deployment)
+3. [IMPORTANT — If zip import is blocked by your admin](#important--if-zip-import-is-blocked-by-your-admin)
+4. [Part 1 — Build the Import Packages](#part-1--build-the-import-packages)
+5. [Part 2 — Deploy the Email Flow (Shared-StablecoinEmailFlow)](#part-2--deploy-the-email-flow)
+6. [Part 3 — Deploy the Format Flow (Shared-FormatResearchReport)](#part-3--deploy-the-format-flow)
+7. [Part 4 — Create the Research Agent in Copilot Studio](#part-4--create-the-research-agent-in-copilot-studio)
+8. [Part 5 — Deploy the Scheduler Flow (Shared-ResearchAgentScheduler)](#part-5--deploy-the-scheduler-flow)
+9. [Part 6 — Configure & Test End-to-End](#part-6--configure--test-end-to-end)
+10. [Changing the Research Topic](#changing-the-research-topic)
+11. [Changing Email Recipients](#changing-email-recipients)
+12. [Running Multiple Topics](#running-multiple-topics)
+13. [Troubleshooting](#troubleshooting)
+14. [Stablecoin & Stapleton Agent Deployment](#stablecoin--stapleton-agent-deployment)
 
 ---
 
@@ -74,6 +75,407 @@ Copilot/
 Python 3.8+   (only needed if you rebuild packages from source)
 git           (to clone the repository)
 ```
+
+---
+
+## IMPORTANT — If zip import is blocked by your admin
+
+If you see the error:
+
+> *"Importing packages with flows is disabled because the 'Include flows in
+> Dataverse solutions' option was enabled by your admin. Use solution import
+> instead."*
+
+This means your Power Platform admin has turned on a tenant-wide setting that
+requires all flows to live inside Dataverse solutions. The legacy zip import
+(`.zip` via **Import Package (Legacy)**) is disabled. You have three options:
+
+---
+
+### Option 1 — Ask your admin to disable the setting (quickest, 5 minutes)
+
+This is the fastest fix if your admin is available.
+
+1. Admin goes to [admin.powerplatform.microsoft.com](https://admin.powerplatform.microsoft.com)
+2. Click **Environments** → select your environment
+3. Click **Settings** (top toolbar)
+4. Expand **Product** → click **Features**
+5. Find **"Include flows in Dataverse solutions"** (may also appear as
+   "Power Automate — Turn on solution-aware flows")
+6. Toggle it **Off**
+7. Click **Save**
+
+After saving, return to Power Automate and retry the zip import as described
+in Parts 2–5. Once all flows are deployed, the admin can re-enable the setting
+if needed.
+
+---
+
+### Option 2 — Create flows inside a Power Apps Solution (no zip needed)
+
+This is the recommended path if the admin setting stays on. Creating flows
+directly inside a solution satisfies the requirement without needing any package
+import at all. Follow this process for **each** of the three flows.
+
+#### Step O2-1 — Create a new solution
+
+1. Go to [make.powerapps.com](https://make.powerapps.com)
+2. Confirm you are in the correct environment (top-right environment selector)
+3. Click **Solutions** in the left sidebar
+4. Click **+ New solution**
+5. Fill in the fields:
+
+| Field | Value |
+|---|---|
+| Display name | `Research Agent Flows` |
+| Name | `ResearchAgentFlows` (auto-filled, no spaces) |
+| Publisher | Select your org's publisher, or click **+ New publisher** and create one with prefix `ra` |
+| Version | `1.0.0.0` |
+
+6. Click **Create**
+
+#### Step O2-2 — Add each flow to the solution
+
+For each flow, follow these steps:
+
+1. Open the `Research Agent Flows` solution
+2. Click **+ New** → **Automation** → **Cloud flow** → **Instant** (for
+   format and email flows) or **Scheduled** (for the scheduler flow)
+3. Build the flow following the **manual creation steps** below
+4. Save — the flow is automatically part of the solution
+
+#### Step O2-3 — Manual creation: Shared-StablecoinEmailFlow
+
+> **Reference file:** `flows/Shared-StablecoinEmailFlow.json`
+
+This flow receives an HTML body + subject + recipient lists and sends an email.
+
+1. In your solution, **+ New → Automation → Cloud flow → Instant**
+2. Name it `Shared-StablecoinEmailFlow`
+3. Choose trigger: **When a HTTP request is received** → click **Create**
+
+**Add these actions in order:**
+
+**Action 1 — Initialize variable (resolvedTo)**
+- Click **+ New step** → search "Initialize variable"
+- Name: `resolvedTo`
+- Type: `Array`
+- Value (expression):
+  ```
+  if(empty(triggerBody()?['to']), createArray('analyst1@yourorg.com','analyst2@yourorg.com'), triggerBody()?['to'])
+  ```
+
+**Action 2 — Initialize variable (resolvedCc)**
+- Name: `resolvedCc`
+- Type: `Array`
+- Value (expression):
+  ```
+  if(empty(triggerBody()?['cc']), createArray('compliance@yourorg.com','research-team@yourorg.com'), triggerBody()?['cc'])
+  ```
+
+**Action 3 — Compose (To_String)**
+- Search "Compose"
+- Inputs (expression): `join(variables('resolvedTo'), ';')`
+
+**Action 4 — Compose (Cc_String)**
+- Inputs (expression): `join(variables('resolvedCc'), ';')`
+
+**Action 5 — Send an email (V2)** (Office 365 Outlook connector)
+- To: (expression) `outputs('Compose')`  ← the To_String compose output
+- Cc: (expression) `outputs('Compose_1')` ← the Cc_String compose output
+- Subject: (expression) `triggerBody()?['subject']`
+- Body: (expression) `triggerBody()?['htmlBody']`
+- Toggle **Is HTML** to **Yes**
+- Importance: Normal
+
+**Action 6 — Response (success)**
+- Status Code: `200`
+- Body (JSON):
+  ```json
+  {
+    "status": "sent",
+    "to": "@{outputs('Compose')}",
+    "cc": "@{outputs('Compose_1')}",
+    "subject": "@{triggerBody()?['subject']}",
+    "timestamp": "@{utcNow()}"
+  }
+  ```
+
+4. Click **Save**
+5. Click the **When a HTTP request is received** trigger step and copy the
+   **HTTP POST URL** that appears after saving
+
+**Configure the request body JSON schema** on the trigger step:
+
+Click the trigger step → **Add JSON schema** → paste:
+```json
+{
+  "type": "object",
+  "properties": {
+    "htmlBody": { "type": "string" },
+    "subject": { "type": "string" },
+    "to": { "type": "array", "items": { "type": "string" } },
+    "cc": { "type": "array", "items": { "type": "string" } },
+    "importance": { "type": "string" }
+  },
+  "required": ["htmlBody", "subject"]
+}
+```
+
+#### Step O2-4 — Manual creation: Shared-FormatResearchReport
+
+> **Reference file:** `flows/Shared-FormatResearchReport.json`
+> **Template file:** `templates/research-report.html`
+
+This flow builds the HTML email from the agent's research payload.
+
+1. In your solution, **+ New → Automation → Cloud flow → Instant**
+2. Name it `Shared-FormatResearchReport`
+3. Trigger: **When a HTTP request is received**
+
+**Paste the request body JSON schema** on the trigger:
+```json
+{
+  "type": "object",
+  "required": ["reportDate","windowStart","windowEnd","topic","executiveSummary","categories","recommendations"],
+  "properties": {
+    "reportDate":       { "type": "string" },
+    "windowStart":      { "type": "string" },
+    "windowEnd":        { "type": "string" },
+    "generatedAt":      { "type": "string" },
+    "topic":            { "type": "string" },
+    "executiveSummary": { "type": "string" },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" },
+          "articles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title":       { "type": "string" },
+                "summary":     { "type": "string" },
+                "url":         { "type": "string" },
+                "source":      { "type": "string" },
+                "publishedAt": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "recommendations": { "type": "array", "items": { "type": "string" } }
+  }
+}
+```
+
+**Add these actions in order:**
+
+**Action 1 — Initialize variable** → Name: `categoryItemsHtml`, Type: String, Value: *(empty)*
+
+**Action 2 — Initialize variable** → Name: `currentArticlesHtml`, Type: String, Value: *(empty)*
+
+**Action 3 — Initialize variable** → Name: `recItemsHtml`, Type: String, Value: *(empty)*
+
+**Action 4 — Initialize variable** → Name: `articleCount`, Type: Integer, Value: `0`
+
+**Action 5 — Compose (HTML_Template)**
+- Open `templates/research-report.html`, copy the entire file content
+- Paste it as the **Inputs** value of this Compose action
+
+**Action 6 — Apply to each (Build_Categories)**
+- Select output: (expression) `triggerBody()?['categories']`
+- Inside the loop, add:
+
+  **6a — Set variable** → Name: `currentArticlesHtml`, Value: *(empty string)*
+
+  **6b — Apply to each (Build_Articles)**
+  - Select output: (expression) `items('Apply_to_each')?['articles']`
+  - Inside this inner loop, add:
+
+    **6b-i — Compose (Build_Article_Html)**
+    Expression:
+    ```
+    concat(
+      '<div class="article-item"><a class="article-title" href="',
+      items('Apply_to_each_2')?['url'],
+      '">',
+      items('Apply_to_each_2')?['title'],
+      '</a><p class="article-meta">',
+      items('Apply_to_each_2')?['source'],
+      ' &nbsp;&middot;&nbsp; ',
+      items('Apply_to_each_2')?['publishedAt'],
+      '</p><p class="article-summary">',
+      items('Apply_to_each_2')?['summary'],
+      '</p></div>'
+    )
+    ```
+
+    **6b-ii — Append to string variable**
+    - Name: `currentArticlesHtml`
+    - Value: `@{outputs('Compose_2')}` ← the article HTML compose
+
+    **6b-iii — Increment variable**
+    - Name: `articleCount`
+    - Value: `1`
+
+  **6c — Compose (Build_Category_Html)**
+  Expression:
+  ```
+  concat(
+    '<div class="category-section"><div class="category-heading">',
+    items('Apply_to_each')?['name'],
+    '</div>',
+    if(empty(coalesce(items('Apply_to_each')?['description'],'')),
+       '',
+       concat('<p class="category-desc">',items('Apply_to_each')?['description'],'</p>')),
+    variables('currentArticlesHtml'),
+    '</div>'
+  )
+  ```
+
+  **6d — Append to string variable**
+  - Name: `categoryItemsHtml`
+  - Value: `@{outputs('Compose_3')}` ← the category HTML compose
+
+**Action 7 — Apply to each (Build_Recommendations)**
+- Select output: (expression) `triggerBody()?['recommendations']`
+- Inside loop:
+
+  **7a — Compose**
+  Expression: `concat('<li class="rec-item"><span class="rec-arrow">&#8594;</span>',items('Apply_to_each_3'),'</li>')`
+
+  **7b — Append to string variable**
+  - Name: `recItemsHtml`
+  - Value: the rec HTML compose output
+
+**Actions 8–16 — Compose chain (template injection)**
+
+Add 9 consecutive Compose actions chained together. Each replaces one
+placeholder in the HTML. Name them R1 through R9:
+
+| Step | Expression |
+|---|---|
+| R1 | `replace(string(outputs('HTML_Template')), '{{REPORT_DATE}}', triggerBody()?['reportDate'])` |
+| R2 | `replace(outputs('R1'), '{{WINDOW_START}}', triggerBody()?['windowStart'])` |
+| R3 | `replace(outputs('R2'), '{{WINDOW_END}}', triggerBody()?['windowEnd'])` |
+| R4 | `replace(outputs('R3'), '{{GENERATED_AT}}', coalesce(triggerBody()?['generatedAt'],utcNow()))` |
+| R5 | `replace(outputs('R4'), '{{TOPIC_NAME}}', triggerBody()?['topic'])` |
+| R6 | `replace(outputs('R5'), '{{ARTICLE_COUNT}}', string(variables('articleCount')))` |
+| R7 | `replace(outputs('R6'), '{{EXECUTIVE_SUMMARY}}', triggerBody()?['executiveSummary'])` |
+| R8 | `replace(outputs('R7'), '{{CATEGORY_ITEMS}}', variables('categoryItemsHtml'))` |
+| R9 | `replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))` |
+
+**Action 17 — Response**
+- Status Code: `200`
+- Body (JSON):
+  ```json
+  {
+    "htmlBody":            "@{outputs('R9')}",
+    "articleCount":        "@{variables('articleCount')}",
+    "categoryCount":       "@{length(triggerBody()?['categories'])}",
+    "recommendationCount": "@{length(triggerBody()?['recommendations'])}"
+  }
+  ```
+
+4. Save and copy the HTTP trigger URL.
+
+#### Step O2-5 — Manual creation: Shared-ResearchAgentScheduler
+
+> **Reference file:** `flows/Shared-ResearchAgentScheduler.json`
+
+1. In your solution, **+ New → Automation → Cloud flow → Scheduled**
+2. Name it `Shared-ResearchAgentScheduler`
+3. Set schedule: Starting **today**, Repeat every **1 Day**
+4. Click **Create**
+
+**Add these actions in order:**
+
+**Action 1 — Initialize variable** → Name: `researchTopic`, Type: String,
+Value: your topic (e.g. `Artificial Intelligence in Enterprise Software`)
+
+**Action 2 — Initialize variable** → Name: `formatFlowUrl`, Type: String,
+Value: *(the HTTP trigger URL from Step O2-4)*
+
+**Action 3 — Initialize variable** → Name: `emailFlowUrl`, Type: String,
+Value: *(the HTTP trigger URL from Step O2-3)*
+
+**Action 4 — Run a copilot topic** (Microsoft Copilot Studio connector)
+- Sign in with your work account when prompted
+- Bot: select your published Research Agent
+- Topic: select `Research & Return Report`
+- Input variables → add `researchTopic` = `@{variables('researchTopic')}`
+
+**Action 5 — Parse JSON**
+- Content: `@{body('Run_a_copilot_topic')}`
+- Schema: paste the schema from `flows/Shared-ResearchAgentScheduler.json`
+  under `Parse_Agent_Response.inputs.schema`
+
+**Action 6 — HTTP** (call format flow)
+- Method: POST
+- URI: `@{variables('formatFlowUrl')}`
+- Headers: `Content-Type: application/json`
+- Body:
+  ```json
+  {
+    "reportDate":       "@{body('Parse_JSON')?['reportDate']}",
+    "windowStart":      "@{body('Parse_JSON')?['windowStart']}",
+    "windowEnd":        "@{body('Parse_JSON')?['windowEnd']}",
+    "generatedAt":      "@{body('Parse_JSON')?['generatedAt']}",
+    "topic":            "@{body('Parse_JSON')?['topic']}",
+    "executiveSummary": "@{body('Parse_JSON')?['executiveSummary']}",
+    "categories":       "@{body('Parse_JSON')?['categories']}",
+    "recommendations":  "@{body('Parse_JSON')?['recommendations']}"
+  }
+  ```
+
+**Action 7 — Parse JSON** (parse format response)
+- Content: `@{body('HTTP')}`
+- Schema: `{ "type":"object","properties":{ "htmlBody":{"type":"string"}, "articleCount":{"type":"integer"}, "categoryCount":{"type":"integer"}, "recommendationCount":{"type":"integer"} } }`
+
+**Action 8 — HTTP** (call email flow)
+- Method: POST
+- URI: `@{variables('emailFlowUrl')}`
+- Headers: `Content-Type: application/json`
+- Body:
+  ```json
+  {
+    "htmlBody":   "@{body('Parse_JSON_2')?['htmlBody']}",
+    "subject":    "@{body('Parse_JSON')?['emailSubject']}",
+    "to":         "@{body('Parse_JSON')?['emailTo']}",
+    "cc":         "@{body('Parse_JSON')?['emailCc']}",
+    "importance": "Normal"
+  }
+  ```
+
+5. **Edit the recurrence trigger** to run at 07:00 UTC:
+   - Click the Recurrence trigger step
+   - Set **At these hours**: `7`
+   - Set **At these minutes**: `0`
+   - Time zone: `UTC`
+
+6. Save and turn the flow **On**.
+
+After completing Steps O2-3 through O2-5, skip Parts 2–5 below and
+continue directly with [Part 6 — Configure & Test End-to-End](#part-6--configure--test-end-to-end).
+
+---
+
+### Option 3 — Request the admin setting be re-examined
+
+If neither Option 1 nor Option 2 is practical, share this context with
+your admin:
+
+> The "Include flows in Dataverse solutions" setting prevents all legacy flow
+> package imports. This is appropriate for production governance but blocks
+> developer and initial deployment workflows. A common compromise is to leave
+> it **Off** in development/sandbox environments and **On** only in production,
+> where flows are promoted via ALM pipelines rather than manual import.
+> See: [https://go.microsoft.com/fwlink/?linkid=2211592](https://go.microsoft.com/fwlink/?linkid=2211592)
 
 ---
 
