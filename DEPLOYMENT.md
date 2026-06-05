@@ -1,313 +1,717 @@
 # Deployment Guide
 
+## Table of Contents
+
+1. [Repository Layout](#repository-layout)
+2. [Prerequisites](#prerequisites)
+3. [Part 1 — Build the Import Packages](#part-1--build-the-import-packages)
+4. [Part 2 — Deploy the Email Flow (Shared-StablecoinEmailFlow)](#part-2--deploy-the-email-flow)
+5. [Part 3 — Deploy the Format Flow (Shared-FormatResearchReport)](#part-3--deploy-the-format-flow)
+6. [Part 4 — Create the Research Agent in Copilot Studio](#part-4--create-the-research-agent-in-copilot-studio)
+7. [Part 5 — Deploy the Scheduler Flow (Shared-ResearchAgentScheduler)](#part-5--deploy-the-scheduler-flow)
+8. [Part 6 — Configure & Test End-to-End](#part-6--configure--test-end-to-end)
+9. [Changing the Research Topic](#changing-the-research-topic)
+10. [Changing Email Recipients](#changing-email-recipients)
+11. [Running Multiple Topics](#running-multiple-topics)
+12. [Troubleshooting](#troubleshooting)
+13. [Stablecoin & Stapleton Agent Deployment](#stablecoin--stapleton-agent-deployment)
+
+---
+
 ## Repository Layout
 
 ```
 Copilot/
 ├── agent/
-│   ├── stablecoin-agent-instructions.md      # Stablecoin agent system prompt
-│   ├── stablecoin-agent-topic.yaml           # Stablecoin Copilot Studio topic
-│   ├── stapleton-agent-instructions.md       # Stapleton agent system prompt
-│   ├── stapleton-agent-topic.yaml            # Stapleton Copilot Studio topic
-│   ├── research-agent-instructions.md        # Generic Research Agent system prompt
-│   └── research-agent-topic.yaml            # Research Agent Copilot Studio topic
+│   ├── research-agent-instructions.md        ← Agent system prompt
+│   ├── research-agent-topic.yaml             ← Copilot Studio topic YAML
+│   ├── stablecoin-agent-instructions.md
+│   ├── stablecoin-agent-topic.yaml
+│   ├── stapleton-agent-instructions.md
+│   └── stapleton-agent-topic.yaml
 ├── flows/
-│   ├── Shared-FormatStablecoinReport.json    # HTML formatter for stablecoin reports
-│   ├── Shared-FormatStapletonReport.json     # HTML formatter for Stapleton reports
-│   ├── Shared-FormatResearchReport.json      # HTML formatter for generic research reports
-│   ├── Shared-StablecoinEmailFlow.json       # Shared Outlook email sender (reusable)
-│   ├── Shared-ResearchAgentScheduler.json    # Scheduled orchestrator for Research Agent
-│   ├── build_packages.py                     # Builds importable .zip packages
-│   └── packages/                             # Generated Power Automate import packages
+│   ├── Shared-FormatResearchReport.json      ← HTML formatter flow definition
+│   ├── Shared-ResearchAgentScheduler.json    ← Scheduled orchestrator definition
+│   ├── Shared-StablecoinEmailFlow.json       ← Shared email sender definition
+│   ├── Shared-FormatStablecoinReport.json
+│   ├── Shared-FormatStapletonReport.json
+│   ├── build_packages.py                     ← Script to generate .zip packages
+│   └── packages/
+│       ├── Shared-FormatResearchReport.zip   ← Ready to import
+│       ├── Shared-ResearchAgentScheduler.zip ← Ready to import
+│       ├── Shared-StablecoinEmailFlow.zip    ← Ready to import
+│       ├── Shared-FormatStablecoinReport.zip
+│       └── Shared-FormatStapletonReport.zip
 ├── templates/
-│   ├── stablecoin-report.html                # Stablecoin HTML email template
-│   ├── stapleton-report.html                 # Stapleton HTML email template
-│   └── research-report.html                  # Generic research HTML email template
-└── DEPLOYMENT.md                             # This file
+│   ├── research-report.html                  ← Purple-branded HTML email template
+│   ├── stablecoin-report.html
+│   └── stapleton-report.html
+└── DEPLOYMENT.md
 ```
 
 ---
 
 ## Prerequisites
 
-| Requirement | Notes |
+### Licenses & Access
+
+| Requirement | Why it is needed |
 |---|---|
-| Microsoft Copilot Studio license | Per-tenant or per-user |
-| Power Automate Premium | Required for HTTP trigger on flows |
-| Office 365 Outlook connector | Shared connection named `shared_o365_outlook` |
-| Bing Search / Generative Answers | Enabled on the Copilot Studio environment |
-| SharePoint or Azure Blob | Recommended for hosting the HTML template file |
+| **Microsoft Copilot Studio** license (per-tenant or per-user) | To create and publish the Research Agent |
+| **Power Automate Premium** license | The HTTP trigger connector requires Premium; needed on the account that owns the flows |
+| **Office 365 / Exchange Online** mailbox | The email sender mailbox; can be a shared mailbox |
+| **Bing Search / Generative Answers** enabled in Copilot Studio environment | The agent uses Bing grounding to research topics |
 
----
+### Accounts to have ready
 
-## Step 1 — Deploy Shared-FormatStablecoinReport
+- An account with **Environment Maker** or higher role in your Power Platform environment
+- A mailbox address to send reports from (e.g. `reports@yourorg.com`)
+- A list of recipient email addresses for the To and CC lines
 
-1. In **Power Automate**, create a new **Instant cloud flow**.
-2. Import the definition from `flows/Shared-FormatStablecoinReport.json`.
-3. Upload `templates/stablecoin-report.html` to a SharePoint document library
-   (e.g. `https://yourorg.sharepoint.com/sites/CopilotAssets/Shared%20Documents/templates/`).
-4. In the **Load_HTML_Template** action, replace the placeholder `Compose` with a
-   **SharePoint – Get file content** action pointing to the uploaded template.
-5. Save and note the **HTTP trigger URL**.
-6. Under **Manage** → **Connections**, confirm the flow runs under a service account
-   that has access to SharePoint.
-7. Share the flow: **More** → **Share** → add the Copilot Studio environment service principal.
-
----
-
-## Step 2 — Deploy Shared-StablecoinEmailFlow
-
-1. In **Power Automate**, create a new **Instant cloud flow**.
-2. Import the definition from `flows/Shared-StablecoinEmailFlow.json`.
-3. In the **Send_Email_via_Outlook** action, configure the
-   `shared_o365_outlook` connection using a licensed shared mailbox
-   (e.g. `stablecoin-reports@yourorg.com`).
-4. Save and note the **HTTP trigger URL**.
-5. Share the flow the same way as Step 1.
-
-> **Reuse tip:** Any other Copilot Studio agent can call
-> `Shared-StablecoinEmailFlow` by passing a different `htmlBody`, `subject`,
-> `to`, and `cc`. The flow is intentionally generic.
-
----
-
-## Step 3 — Create the Copilot Studio Agent
-
-1. In **Copilot Studio**, click **Create** → **New agent**.
-2. Name it **Stablecoin Research Agent**.
-3. Paste the contents of `agent/stablecoin-agent-instructions.md` into the
-   **Instructions** field.
-4. Under **Topics**, create a new topic named **Research & Send Report**.
-5. Switch to **YAML editor** and paste the contents of
-   `agent/stablecoin-agent-topic.yaml`.
-6. In the two `InvokeFlowAction` steps, map the `flowId` values to the
-   actual flow GUIDs from Steps 1 and 2.
-7. Enable **Generative Answers** and connect the Bing Search data source.
-
----
-
-## Step 4 — Configure the Scheduled Trigger
-
-1. In **Power Automate**, create a new **Scheduled cloud flow** (daily, 07:00 UTC).
-2. Add a single action: **HTTP** → POST to the Copilot Studio agent's
-   **Direct Line** endpoint with the trigger phrase
-   `"Run the stablecoin 24-hour report"`.
-3. Store the Direct Line secret in **Key Vault**; reference it via the
-   Key Vault connector.
-
----
-
-## Updating Email Recipients
-
-Edit `agent/stablecoin-agent-instructions.md` → **Email Configuration** section,
-then redeploy the agent instructions. No flow changes are needed unless you want
-to change the hard-coded fallback lists in `Shared-StablecoinEmailFlow.json`.
-
----
-
-## Using the Flows with Other Agents
-
-Both flows accept standard HTTP POST requests. To reuse them in a different agent:
-
-```yaml
-# Any agent topic can call the email flow with its own content:
-- kind: InvokeFlowAction
-  flowId: Shared-StablecoinEmailFlow   # same shared flow
-  inputs:
-    htmlBody: =topic.myCustomHtmlBody
-    subject:  ="My Report – " & topic.reportDate
-    to:       =["customrecipient@yourorg.com"]
-    cc:       =[]
-```
-
-To use a different HTML template, call `Shared-FormatStablecoinReport` with
-a custom template loaded in the **Load_HTML_Template** step, or create a
-sibling flow (e.g. `Shared-FormatEquityReport`) that follows the same
-input/output contract.
-
----
-
----
-
-# Generic Research Agent — Deployment Guide
-
-The **Research Agent** is a configurable, topic-agnostic solution. A single
-Power Automate scheduled flow (**Shared-ResearchAgentScheduler**) kicks off
-a Copilot Studio agent, receives the research payload (including the email
-subject and distribution list from the agent), formats it into HTML, and
-sends the email — with no hardcoded recipients in the flow itself.
-
-## Architecture
+### Tools (for building packages locally — optional)
 
 ```
-Power Automate Recurrence Trigger (daily 07:00 UTC)
-  │
-  ├─► Shared-ResearchAgentScheduler
-  │     │
-  │     ├─► [1] Call Research Agent (Copilot Studio connector)
-  │     │         Agent researches topic via Bing generative answers
-  │     │         Returns: executiveSummary, categories[], recommendations[],
-  │     │                  emailSubject, emailTo[], emailCc[]
-  │     │
-  │     ├─► [2] Call Shared-FormatResearchReport (HTTP)
-  │     │         Builds HTML from categories + articles + recommendations
-  │     │         Returns: htmlBody, articleCount, categoryCount
-  │     │
-  │     └─► [3] Call Shared-StablecoinEmailFlow (HTTP)
-  │               Sends email via Office 365 Outlook
-  │               Subject + To + CC all come from the agent's output
+Python 3.8+   (only needed if you rebuild packages from source)
+git           (to clone the repository)
 ```
-
-**Key design principle:** The agent owns the email configuration. Change
-recipients or subject formatting by editing the agent instructions — the
-flows require no modification.
 
 ---
 
-## Step A — Deploy Shared-FormatResearchReport
+## Part 1 — Build the Import Packages
 
-1. In **Power Automate**, create a new **Instant cloud flow**.
-2. Import the flow definition from `flows/Shared-FormatResearchReport.json`.
-3. In the `R1` Compose action, replace the `'{{TEMPLATE_PLACEHOLDER}}'`
-   literal with the full content of `templates/research-report.html`
-   (paste it as a string, or load it via a SharePoint Get file content action).
-4. Save and copy the **HTTP trigger URL** — you will need it in Step C.
-5. Share the flow with the Power Automate service principal.
+You can either **download the pre-built zips** from the repository or **rebuild
+them locally** from source. The pre-built packages in `flows/packages/` are
+ready to use and do not require Python.
 
-> **Or use the build script:** Run `python flows/build_packages.py` to generate
-> `flows/packages/Shared-FormatResearchReport.zip`, then import that zip in
-> Power Automate (**My flows** → **Import** → **Import Package (Legacy)**).
-> The script embeds the template automatically.
+### Option A — Use the pre-built packages (recommended)
 
-### Input payload accepted by this flow
+1. Navigate to the repository on GitHub: `github.com/Jpope24/Copilot`
+2. Click the branch dropdown and select `claude/power-automate-copilot-email-sqqcH`
+3. Browse to `flows/packages/`
+4. Click each `.zip` file, then click **Download raw file**
+
+Download these three files for the Research Agent solution:
+
+```
+Shared-FormatResearchReport.zip
+Shared-ResearchAgentScheduler.zip
+Shared-StablecoinEmailFlow.zip
+```
+
+### Option B — Rebuild from source
+
+Use this option if you have modified the HTML template or flow definitions
+and need to re-embed them into fresh packages.
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/Jpope24/Copilot.git
+cd Copilot
+git checkout claude/power-automate-copilot-email-sqqcH
+```
+
+**2. Run the build script**
+
+```bash
+cd flows
+python build_packages.py
+```
+
+Expected output:
+
+```
+  Created: flows/packages/Shared-FormatStablecoinReport.zip
+  Created: flows/packages/Shared-StablecoinEmailFlow.zip
+Done — Flow 1 & 2 packages ready in flows/packages/
+  Created: flows/packages/Shared-FormatStapletonReport.zip
+Done — all 3 packages ready in flows/packages/
+  Created: flows/packages/Shared-FormatResearchReport.zip
+  Created: flows/packages/Shared-ResearchAgentScheduler.zip
+Done — all 5 packages ready in flows/packages/
+```
+
+**3. Verify the packages**
+
+```bash
+ls -lh flows/packages/
+```
+
+You should see five `.zip` files, all under 15 KB each. The two new packages:
+
+```
+Shared-FormatResearchReport.zip    ~12 KB  (HTML template embedded inside)
+Shared-ResearchAgentScheduler.zip  ~ 5 KB
+```
+
+> **What the script does:** It reads `templates/research-report.html`,
+> embeds it as a literal string inside the `HTML_Template` Compose action
+> of the format flow, then wraps everything in the Power Automate package
+> structure (`manifest.json` + `definition.json`) inside a `.zip`.
+
+---
+
+## Part 2 — Deploy the Email Flow
+
+`Shared-StablecoinEmailFlow` is the shared email sender used by all agents.
+Deploy it once; every other flow calls it via HTTP.
+
+**1. Open Power Automate**
+
+Go to [make.powerautomate.com](https://make.powerautomate.com) and confirm
+you are in the correct environment (top-right environment selector).
+
+**2. Import the package**
+
+- Left sidebar → **My flows**
+- Click **Import** (top menu) → **Import Package (Legacy)**
+- Click **Upload** and select `Shared-StablecoinEmailFlow.zip`
+- Wait for the upload to process (a few seconds)
+
+**3. Configure the import options**
+
+The import screen shows a list of resources. For each row:
+
+| Resource | Action | Setting |
+|---|---|---|
+| `Shared-StablecoinEmailFlow` (flow) | **Create as new** | Leave the name as-is |
+| `shared_office365` (connection) | **Select during import** | Choose your Office 365 Outlook connection, or click **Create new** to set one up |
+
+To create a new Office 365 connection:
+- Click the wrench icon next to the connection row
+- Click **Create new**
+- Sign in with the mailbox account you want to send from
+- Return to the import screen and select the newly created connection
+
+**4. Click Import** and wait for the confirmation banner.
+
+**5. Open the flow and copy its trigger URL**
+
+- Go to **My flows** → click `Shared-StablecoinEmailFlow`
+- Click **Edit**
+- Click the **When a HTTP request is received** trigger (the first step)
+- The **HTTP POST URL** field will be populated after you save. Click **Save** first.
+- Copy the full URL — it looks like:
+  ```
+  https://prod-XX.eastus.logic.azure.com:443/workflows/abc123.../triggers/manual/paths/invoke?...
+  ```
+- Save this URL — it is needed in Part 5.
+
+**6. Share the flow**
+
+- Go back to the flow detail page
+- Click the **·· · More** menu → **Share**
+- Add the service account or service principal that Power Automate uses
+  in your environment so other flows can call it
+
+---
+
+## Part 3 — Deploy the Format Flow
+
+`Shared-FormatResearchReport` converts the agent's research JSON into a
+fully rendered HTML email body.
+
+**1. Import the package**
+
+- **My flows** → **Import** → **Import Package (Legacy)**
+- Upload `Shared-FormatResearchReport.zip`
+
+**2. Configure the import options**
+
+| Resource | Action |
+|---|---|
+| `Shared-FormatResearchReport` (flow) | **Create as new** |
+
+No connections are required — this flow has no external connectors.
+
+**3. Click Import**
+
+**4. Verify the HTML template is embedded**
+
+- Open the flow in Edit mode
+- Scroll to the action named **HTML_Template** (a Compose action near the top)
+- Its **Inputs** field should contain the full HTML from `templates/research-report.html`
+  (you will see `<!DOCTYPE html>…` as the value)
+- If the input says `{{TEMPLATE_PLACEHOLDER}}`, the template was not embedded.
+  In that case:
+  - Open `templates/research-report.html` in a text editor
+  - Copy the entire file content
+  - Click the **HTML_Template** Compose action
+  - Replace `{{TEMPLATE_PLACEHOLDER}}` with the copied HTML
+  - Click **Save**
+
+**5. Save and copy the trigger URL**
+
+Same process as Part 2 Step 5. Copy the **HTTP POST URL** from the
+`When a HTTP request is received` trigger and save it for Part 5.
+
+**6. Test the flow manually (optional but recommended)**
+
+- Click **Test** (top-right in Edit mode) → **Manually** → **Test**
+- In the **Run flow** panel, paste this sample body:
 
 ```json
 {
-  "reportDate":       "June 5, 2026",
-  "windowStart":      "2026-06-04T07:00:00Z",
-  "windowEnd":        "2026-06-05T07:00:00Z",
-  "generatedAt":      "2026-06-05T07:05:00Z",
-  "topic":            "Artificial Intelligence in Enterprise Software",
-  "executiveSummary": "2–4 sentence overall summary.",
+  "reportDate": "June 5, 2026",
+  "windowStart": "2026-06-04T07:00:00Z",
+  "windowEnd": "2026-06-05T07:00:00Z",
+  "topic": "Artificial Intelligence in Enterprise Software",
+  "executiveSummary": "AI adoption in enterprise software accelerated this week with three major product announcements. Cloud vendors are competing aggressively on model integration and pricing. Regulatory scrutiny is increasing in the EU.",
   "categories": [
     {
-      "name":        "Market Adoption",
-      "description": "Optional one-sentence overview.",
+      "name": "Product Launches",
+      "description": "New AI-powered software products announced this week.",
       "articles": [
         {
-          "title":       "Article Headline",
-          "summary":     "2–3 sentence factual summary.",
-          "url":         "https://source.com/article",
-          "source":      "Source Name",
-          "publishedAt": "June 5, 2026 04:30 UTC"
+          "title": "Microsoft Copilot Gets New Reasoning Features",
+          "summary": "Microsoft announced enhanced reasoning capabilities for Copilot across its 365 suite. The update enables multi-step task planning directly in Word and Excel. General availability is set for Q3 2026.",
+          "url": "https://blogs.microsoft.com/blog/sample",
+          "source": "Microsoft Blog",
+          "publishedAt": "June 5, 2026 08:00 UTC"
         }
       ]
     }
   ],
   "recommendations": [
-    "First actionable item.",
-    "Second actionable item."
+    "Evaluate Microsoft Copilot's new reasoning features against your current AI tooling.",
+    "Monitor EU AI Act implementation timelines — enterprise software vendors will need compliance updates."
   ]
 }
 ```
 
-### Response returned by this flow
+- Click **Run flow**
+- In the run history, open the completed run and expand **Respond_With_HTML**
+- The **Outputs** → **body** → **htmlBody** field should contain full rendered HTML
+- Copy and paste the HTML into a browser file to preview the email
+
+---
+
+## Part 4 — Create the Research Agent in Copilot Studio
+
+**1. Open Copilot Studio**
+
+Go to [copilotstudio.microsoft.com](https://copilotstudio.microsoft.com) and
+confirm you are in the same Power Platform environment you used in Parts 2–3.
+
+**2. Create a new agent**
+
+- Click **Create** (left sidebar)
+- Click **New agent**
+- Choose **Skip to configure** (you will add instructions manually)
+
+**3. Name and describe the agent**
+
+| Field | Value |
+|---|---|
+| Name | `Research Agent` |
+| Description | `Researches a configured topic daily and returns a structured report with categorized articles, summaries, links, recommendations, and email routing to the calling Power Automate flow.` |
+| Instructions | *(see next step)* |
+
+**4. Paste the agent instructions**
+
+- Open `agent/research-agent-instructions.md` from the repository
+- Copy the entire file content
+- Paste it into the **Instructions** field in Copilot Studio
+- Before saving, find this section near the bottom of the instructions:
 
 ```json
-{
-  "htmlBody":            "<html>…</html>",
-  "articleCount":        12,
-  "categoryCount":       4,
-  "recommendationCount": 5
-}
+"emailTo": [
+  "recipient1@yourorg.com",
+  "recipient2@yourorg.com"
+],
+"emailCc": [
+  "manager@yourorg.com"
+]
 ```
 
+- Replace the placeholder addresses with your actual recipient email addresses
+
+**5. Enable Generative Answers with Bing**
+
+- Click **Knowledge** (left sidebar or top tab)
+- Click **Add knowledge**
+- Select **Public websites and Bing Search**
+- Toggle **Bing Search** to **On**
+- Click **Save**
+
+**6. Create the topic**
+
+- Click **Topics** (left sidebar)
+- Click **Add a topic** → **Create from blank**
+- Name the topic: `Research & Return Report`
+- Click **More options** (··· menu on the topic) → **Open YAML editor**
+- Select all the existing YAML and delete it
+- Open `agent/research-agent-topic.yaml` from the repository, copy the entire file
+- Paste it into the YAML editor
+- Click **Save**
+
+**7. Allow Power Automate to call this agent**
+
+- Click **Settings** (gear icon, top-right)
+- Go to **Security** → **Authentication**
+- Confirm **Authentication** is set to **No authentication** or
+  **Authenticate with Microsoft** (either works with the PA connector)
+- Go to **Advanced settings** → enable **Allow the bot to be called
+  from Power Automate flows**
+- Click **Save**
+
+**8. Publish the agent**
+
+- Click **Publish** (top-right)
+- Wait for the publish confirmation banner
+
+**9. Record the Agent ID and Environment ID**
+
+You need both values for the scheduler flow in Part 5.
+
+**Agent ID:**
+- While on the agent page, look at the browser URL bar:
+  ```
+  https://copilotstudio.microsoft.com/environments/ENV_ID/bots/AGENT_ID/...
+  ```
+- Copy the `AGENT_ID` portion (a GUID like `cr123_myResearchAgent`)
+
+**Environment ID:**
+- Go to [admin.powerplatform.microsoft.com](https://admin.powerplatform.microsoft.com)
+- Click **Environments** → click your environment name
+- Copy the **Environment ID** (a GUID like `a1b2c3d4-e5f6-...`)
+
 ---
 
-## Step B — Deploy Shared-StablecoinEmailFlow (if not already deployed)
+## Part 5 — Deploy the Scheduler Flow
 
-This flow is shared across all agents. See **Step 2** in the Stablecoin
-section above. No changes are needed — it accepts `to` and `cc` arrays from
-the caller, so the Research Agent's dynamic distribution list works without
-any flow modifications.
+`Shared-ResearchAgentScheduler` is the daily orchestrator. It runs on a
+schedule, calls the agent, formats the results, and sends the email.
 
----
+**1. Import the package**
 
-## Step C — Create the Research Agent in Copilot Studio
+- **My flows** → **Import** → **Import Package (Legacy)**
+- Upload `Shared-ResearchAgentScheduler.zip`
 
-1. In **Copilot Studio**, click **Create** → **New agent**.
-2. Name it **Research Agent** (or any name matching your topic).
-3. Paste the contents of `agent/research-agent-instructions.md` into the
-   **Instructions** field.
-4. Under **Topics**, create a new topic named **Research & Return Report**.
-5. Switch to the **YAML editor** and paste the contents of
-   `agent/research-agent-topic.yaml`.
-6. Enable **Generative Answers** with a Bing Search data source.
-7. Under **Settings** → **Security**, confirm the agent can be called by
-   Power Automate (toggle **Allow the bot to be called from Power Automate**).
-8. Note the **Agent ID** from the URL bar — you need it in Step D.
+**2. Configure the import options**
 
----
-
-## Step D — Deploy Shared-ResearchAgentScheduler
-
-1. In **Power Automate**, create a new **Scheduled cloud flow**.
-2. Import the definition from `flows/Shared-ResearchAgentScheduler.json`.
-3. Configure the four required values in the flow:
-
-| Variable / Parameter | Where to find it | Description |
+| Resource | Action | Notes |
 |---|---|---|
-| `researchTopic` (variable) | Edit directly in flow | The topic the agent will research daily |
-| `formatFlowUrl` (variable) | Step A trigger URL | HTTP URL of Shared-FormatResearchReport |
-| `emailFlowUrl` (variable) | Step B trigger URL | HTTP URL of Shared-StablecoinEmailFlow |
-| `environmentId` (parameter) | Power Platform admin center | Your Power Platform environment GUID |
-| `agentId` (parameter) | Copilot Studio URL | The agent's GUID from Step C |
-| `topicName` (parameter) | Copilot Studio | The topic name you created in Step C |
+| `Shared-ResearchAgentScheduler` (flow) | **Create as new** | |
+| `shared_CopilotStudio` (connection) | **Select during import** | Choose or create a Microsoft Copilot Studio connection |
 
-4. Add the **Microsoft Copilot Studio** connection when prompted.
-5. Set the schedule to **Daily at 07:00 UTC** (configured in the trigger).
-6. Save and **turn the flow on**.
+To create a new Copilot Studio connection:
+- Click the wrench icon next to the connection row
+- Click **Create new** → sign in with your work account
+- Return and select the new connection
+
+**3. Click Import**
+
+**4. Open the flow in Edit mode**
+
+Go to **My flows** → `Shared-ResearchAgentScheduler` → **Edit**
+
+**5. Update the three configuration variables**
+
+The first three actions in the flow are `Initialize Variable` steps.
+Click each one and update the **Value** field:
+
+| Action name | Field to change | What to enter |
+|---|---|---|
+| `Init_ResearchTopic` | Value | The topic you want researched, e.g. `"Cybersecurity Threats in Financial Services"` |
+| `Init_FormatFlowUrl` | Value | The HTTP trigger URL copied from Part 3 Step 5 |
+| `Init_EmailFlowUrl` | Value | The HTTP trigger URL copied from Part 2 Step 5 |
+
+**6. Update the flow parameters**
+
+Below the variable steps, click the **Call_Research_Agent** action. You
+will see it references `parameters('environmentId')`,
+`parameters('agentId')`, and `parameters('topicName')`.
+
+To set these parameters:
+- Click the **··· More** menu at the top of the flow editor → **Settings**
+  (or look for a **Parameters** panel in the flow)
+- Update the three parameter default values:
+
+| Parameter | Value |
+|---|---|
+| `environmentId` | Your Power Platform environment GUID (from Part 4 Step 9) |
+| `agentId` | Your Copilot Studio agent GUID (from Part 4 Step 9) |
+| `topicName` | `Research & Return Report` (the topic name you created in Part 4 Step 6) |
+
+> **Alternative:** If Power Automate's import UI does not expose parameters
+> directly, click the **Call_Research_Agent** action and edit the **Path**
+> field directly:
+> ```
+> /environments/YOUR-ENV-ID/bots/YOUR-AGENT-ID/topics/Research & Return Report/run
+> ```
+
+**7. Verify the recurrence schedule**
+
+- Click the **Recurrence** trigger (the very first step in the flow)
+- Confirm it is set to:
+  - **Frequency:** Day
+  - **Interval:** 1
+  - **At these hours:** 7
+  - **At these minutes:** 0
+  - **Time zone:** UTC
+- Adjust if you want a different run time
+
+**8. Save the flow**
+
+Click **Save** (top-right). Fix any validation errors before proceeding.
+
+**9. Turn the flow on**
+
+- Return to **My flows**
+- Find `Shared-ResearchAgentScheduler`
+- If it shows as **Off**, click the toggle to turn it **On**
 
 ---
 
-## Configuring Email Recipients
+## Part 6 — Configure & Test End-to-End
 
-Recipients are set by the **agent's instructions**, not in the flow. To change
-who receives the report:
+Before waiting for the 07:00 UTC scheduled run, trigger the flow manually
+to confirm everything is wired up correctly.
 
-1. Open `agent/research-agent-instructions.md`.
-2. Update the `emailTo` and `emailCc` arrays in the **Structured Output Schema**
-   section (the example JSON).
-3. Update the agent instructions in Copilot Studio.
+**1. Run the scheduler flow manually**
 
-No flow changes are required.
+- Go to **My flows** → `Shared-ResearchAgentScheduler`
+- Click **Run** (the play button on the flow detail page)
+- Confirm the run by clicking **Run flow** in the panel
+
+**2. Monitor the run**
+
+- Click **My flows** → `Shared-ResearchAgentScheduler`
+- Scroll down to **28-day run history**
+- The run will appear with a spinner while in progress (the agent research
+  step typically takes 30–90 seconds)
+- Click the run to open the detailed view
+
+**3. Check each step**
+
+The run detail shows every action with a green checkmark (success) or red X
+(failure). Work through them in order:
+
+| Step | What to check if it fails |
+|---|---|
+| `Call_Research_Agent` | Verify Agent ID, Environment ID, and topic name are correct. Check that the agent is published and PA connection is authenticated. |
+| `Parse_Agent_Response` | Open the raw output of `Call_Research_Agent` — confirm it returns JSON, not an error message. |
+| `Call_Format_Flow` | Verify the format flow URL is correct and the format flow is turned on. Click the step to see the HTTP response code (should be 200). |
+| `Parse_Format_Response` | Confirm the format flow returned `htmlBody` in its response. |
+| `Call_Email_Flow` | Verify the email flow URL is correct. Check the HTTP response — code 200 means the email was sent. |
+| `Log_Run_Summary` | If this step is green, the full run succeeded. |
+
+**4. Check your inbox**
+
+Within a few minutes of a successful run, the configured recipients should
+receive an email with:
+- Subject matching the pattern `{Topic} — Research Brief | {Date}`
+- A purple-branded HTML body containing the executive summary,
+  categorized article cards with clickable links, and a recommendations list
+
+**5. Verify the email renders correctly**
+
+Open the email in Outlook (desktop or web). The email should display:
+- A dark purple gradient header with the topic name
+- A meta bar showing the date range and article count
+- An executive summary block
+- Category sections with article cards (title link, source, date, summary)
+- A recommendations list with arrow bullets
+- A footer with the agent attribution
+
+If the email shows raw HTML tags instead of rendered content, the recipient's
+email client may be blocking HTML. Forward it to a Gmail or Outlook web address
+to confirm the HTML renders correctly.
 
 ---
 
-## Running Multiple Research Topics
+## Changing the Research Topic
 
-To run reports on several topics simultaneously:
+The topic is a single variable in the scheduler flow — no agent or template
+changes are needed.
 
-1. Duplicate `Shared-ResearchAgentScheduler` in Power Automate.
-2. Change the `researchTopic` variable to a different topic.
-3. Optionally adjust the scheduled time to stagger delivery.
+1. Open **Shared-ResearchAgentScheduler** in Edit mode
+2. Click the **Init_ResearchTopic** action (first step)
+3. Change the **Value** to your new topic, e.g.:
+   ```
+   Global Supply Chain Disruptions
+   ```
+4. Click **Save**
 
-All duplicates share the same **Shared-FormatResearchReport** and
-**Shared-StablecoinEmailFlow** — no additional flow deployments needed.
+The next scheduled run (or your next manual test run) will research the new topic.
+
+**Topic examples that work well:**
+
+- `Cybersecurity Threats in Financial Services`
+- `Electric Vehicle Market Trends`
+- `Federal Reserve Policy and Inflation`
+- `Mergers and Acquisitions in Healthcare`
+- `Open Source AI Model Releases`
+- `Commercial Real Estate Market`
 
 ---
 
-## Rebuilding Import Packages
+## Changing Email Recipients
 
-```bash
-# From the repo root:
-cd flows
-python build_packages.py
+Recipients are controlled by the **agent instructions**, not by the flows.
+This means you update them once in Copilot Studio — no flow edits needed.
 
-# Outputs:
-#   packages/Shared-FormatStablecoinReport.zip
-#   packages/Shared-StablecoinEmailFlow.zip
-#   packages/Shared-FormatStapletonReport.zip
-#   packages/Shared-FormatResearchReport.zip
-#   packages/Shared-ResearchAgentScheduler.zip
-```
+1. Open `agent/research-agent-instructions.md` in a text editor
+2. Find the **Structured Output Schema** section
+3. Update the `emailTo` and `emailCc` arrays:
+   ```json
+   "emailTo": [
+     "alice@yourorg.com",
+     "bob@yourorg.com"
+   ],
+   "emailCc": [
+     "manager@yourorg.com"
+   ]
+   ```
+4. Copy the entire updated file content
+5. In **Copilot Studio** → your Research Agent → **Instructions**
+6. Replace the existing instructions with the updated content
+7. Click **Save** then **Publish**
+
+---
+
+## Running Multiple Topics
+
+Each topic needs its own scheduler flow instance. The format and email flows
+are shared — no additional deployments needed for those.
+
+**1. Duplicate the scheduler flow**
+
+- **My flows** → `Shared-ResearchAgentScheduler` → **··· More** → **Save as**
+- Name it something descriptive, e.g. `ResearchScheduler-Cybersecurity`
+
+**2. Update the topic variable**
+
+Open the duplicate in Edit mode → change `Init_ResearchTopic` Value
+
+**3. Stagger the schedules (optional)**
+
+To avoid all reports arriving at the same time, offset each scheduler by
+15–30 minutes:
+- `ResearchScheduler-AI`: 07:00 UTC
+- `ResearchScheduler-Cybersecurity`: 07:15 UTC
+- `ResearchScheduler-Finance`: 07:30 UTC
+
+**4. Update agent instructions for each topic's recipients (optional)**
+
+If different topics need different distribution lists, create separate agent
+instances in Copilot Studio with different `emailTo`/`emailCc` in their
+instructions, and point each scheduler to the appropriate agent.
+
+---
+
+## Troubleshooting
+
+### "Call_Research_Agent" step fails with 404
+
+- Verify the `environmentId` and `agentId` parameters match your actual
+  environment and agent exactly (GUIDs are case-sensitive)
+- Confirm the agent is **Published** in Copilot Studio (draft agents cannot
+  be called externally)
+- Check that **Allow the bot to be called from Power Automate flows** is
+  enabled in the agent's Security settings
+
+### "Call_Research_Agent" step fails with 401 / Unauthorized
+
+- The Copilot Studio connection used by the flow may be expired or
+  using the wrong account
+- Go to [make.powerautomate.com](https://make.powerautomate.com) →
+  **Data** → **Connections** → find the Copilot Studio connection →
+  click **··· More** → **Fix connection** → re-authenticate
+
+### "Parse_Agent_Response" fails with a schema mismatch
+
+- The agent returned data in an unexpected format
+- Open the **Call_Research_Agent** output in the run history and copy the
+  raw JSON
+- Compare it against the schema in `flows/Shared-ResearchAgentScheduler.json`
+  under `Parse_Agent_Response.inputs.schema`
+- Common cause: the agent returned a conversational text response instead of
+  JSON. Check the agent's topic YAML and confirm the `EndTask` outputs are
+  mapped correctly.
+
+### "Call_Format_Flow" returns 400 Bad Request
+
+- The JSON payload sent to the format flow is missing a required field
+- Open the step's input/output in the run history — look for which property
+  is null or missing
+- Required fields: `reportDate`, `windowStart`, `windowEnd`, `topic`,
+  `executiveSummary`, `categories`, `recommendations`
+
+### "Call_Format_Flow" returns 500 / template not injected
+
+- The `HTML_Template` Compose action in `Shared-FormatResearchReport` still
+  contains `{{TEMPLATE_PLACEHOLDER}}` instead of actual HTML
+- Follow Part 3 Step 4 to manually paste the template content
+
+### "Call_Email_Flow" returns 500
+
+- The Office 365 connection may have expired — re-authenticate it in the
+  Data → Connections section
+- The `to` field returned by the agent may be empty — check that the agent
+  instructions contain valid email addresses in the `emailTo` array
+
+### Email arrives with broken layout / missing styles
+
+- Most email clients strip `<style>` blocks. The template uses inline-compatible
+  CSS but some clients (notably older Outlook desktop versions) have limited
+  support for flexbox and CSS grid
+- To maximize compatibility, open `templates/research-report.html`,
+  inline all CSS using a tool like [Mailchimp's CSS Inliner](https://templates.mailchimp.com/resources/inline-css/),
+  then rebuild the packages with `python flows/build_packages.py`
+
+### Flow runs but no email is received
+
+- Check the `Call_Email_Flow` step output — confirm `status` is `"sent"`
+- Check the sender mailbox's **Sent Items** folder to confirm it dispatched
+- Check recipient spam/junk folders — HTML emails from automated senders
+  are sometimes filtered
+- Verify the email addresses in the agent instructions are correct
+
+---
+
+## Stablecoin & Stapleton Agent Deployment
+
+These agents use the older pattern where the agent calls flows directly
+(rather than returning data to a scheduler flow). They share the same
+`Shared-StablecoinEmailFlow` email sender.
+
+### Deploy Shared-FormatStablecoinReport
+
+1. **My flows** → **Import** → upload `Shared-FormatStablecoinReport.zip`
+2. No connections needed — click **Import**
+3. Open the flow, verify `HTML_Template` Compose contains the stablecoin HTML
+4. Save and copy the HTTP trigger URL
+
+### Deploy Shared-FormatStapletonReport
+
+1. Same process — upload `Shared-FormatStapletonReport.zip`
+2. Verify `HTML_Template` Compose contains the Stapleton HTML
+3. Save and copy the HTTP trigger URL
+
+### Create Stablecoin Agent in Copilot Studio
+
+1. Create a new agent named **Stablecoin Research Agent**
+2. Paste contents of `agent/stablecoin-agent-instructions.md` as Instructions
+3. Create topic **Research & Send Report** from `agent/stablecoin-agent-topic.yaml`
+4. In the two `InvokeFlowAction` steps, replace `flowId` values with the
+   actual GUIDs of your deployed `Shared-FormatStablecoinReport` and
+   `Shared-StablecoinEmailFlow` flows
+5. Enable Bing Search under Knowledge
+6. Publish the agent
+
+### Create Stapleton Agent in Copilot Studio
+
+1. Create a new agent named **Stapleton Research Agent**
+2. Paste contents of `agent/stapleton-agent-instructions.md` as Instructions
+3. Create topic from `agent/stapleton-agent-topic.yaml`
+4. Map flow IDs: `Shared-FormatStapletonReport` + `Shared-StablecoinEmailFlow`
+5. Enable Bing Search, publish
+
+### Schedule both agents
+
+For each agent, create a Power Automate Scheduled flow (daily 07:00 UTC)
+with a single HTTP action that POSTs to the agent's Direct Line endpoint
+with the trigger phrase from its instructions. Store the Direct Line secret
+in Azure Key Vault and reference it via the Key Vault connector.
