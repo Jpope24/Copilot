@@ -1,0 +1,192 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "_meta": {
+    "flowName": "Shared-FormatResearchReport",
+    "description": "Accepts structured research JSON from any Copilot agent — categories, articles with summaries and links, and recommendations — and returns a fully rendered HTML email body. Designed to be called by Shared-ResearchAgentScheduler or any compatible orchestrating flow.",
+    "version": "1.0.0",
+    "sharedWith": "All agents in the Copilot Studio environment"
+  },
+
+  "trigger": {
+    "type": "Request",
+    "kind": "Http",
+    "description": "HTTP trigger. Called by Shared-ResearchAgentScheduler after the Copilot agent returns its research payload.",
+    "inputs": {
+      "schema": {
+        "type": "object",
+        "required": ["reportDate", "windowStart", "windowEnd", "topic", "executiveSummary", "categories", "recommendations"],
+        "properties": {
+          "reportDate":       { "type": "string", "description": "Human-readable date, e.g. 'June 5, 2026'" },
+          "windowStart":      { "type": "string", "description": "ISO 8601 start of research window" },
+          "windowEnd":        { "type": "string", "description": "ISO 8601 end of research window" },
+          "generatedAt":      { "type": "string", "description": "ISO 8601 generation timestamp (optional; defaults to utcNow())" },
+          "topic":            { "type": "string", "description": "The researched topic name, used as the report heading" },
+          "executiveSummary": { "type": "string", "description": "2–4 sentence overall summary" },
+          "categories": {
+            "type": "array",
+            "description": "Categorized research findings",
+            "items": {
+              "type": "object",
+              "required": ["name", "articles"],
+              "properties": {
+                "name":        { "type": "string", "description": "Category display name" },
+                "description": { "type": "string", "description": "Optional one-sentence category overview" },
+                "articles": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["title", "summary", "url", "source", "publishedAt"],
+                    "properties": {
+                      "title":       { "type": "string" },
+                      "summary":     { "type": "string", "description": "2–3 sentence factual summary" },
+                      "url":         { "type": "string", "description": "Direct link to the source article" },
+                      "source":      { "type": "string", "description": "Publication or website name" },
+                      "publishedAt": { "type": "string", "description": "Human-readable timestamp, e.g. 'June 5, 2026 04:30 UTC'" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "description": "Actionable items to consider, each a plain string",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+
+  "actions": {
+
+    "Initialize_CategoryItemsHtml": {
+      "type": "InitializeVariable",
+      "inputs": { "variables": [{ "name": "categoryItemsHtml", "type": "string", "value": "" }] }
+    },
+
+    "Initialize_CurrentArticlesHtml": {
+      "type": "InitializeVariable",
+      "inputs": { "variables": [{ "name": "currentArticlesHtml", "type": "string", "value": "" }] },
+      "runAfter": { "Initialize_CategoryItemsHtml": ["Succeeded"] }
+    },
+
+    "Initialize_RecItemsHtml": {
+      "type": "InitializeVariable",
+      "inputs": { "variables": [{ "name": "recItemsHtml", "type": "string", "value": "" }] },
+      "runAfter": { "Initialize_CurrentArticlesHtml": ["Succeeded"] }
+    },
+
+    "Initialize_ArticleCount": {
+      "type": "InitializeVariable",
+      "inputs": { "variables": [{ "name": "articleCount", "type": "integer", "value": 0 }] },
+      "runAfter": { "Initialize_RecItemsHtml": ["Succeeded"] }
+    },
+
+    "Build_Categories": {
+      "type": "Apply_to_each",
+      "foreach": "@triggerBody()?['categories']",
+      "runAfter": { "Initialize_ArticleCount": ["Succeeded"] },
+      "actions": {
+
+        "Reset_CurrentArticlesHtml": {
+          "type": "SetVariable",
+          "inputs": { "name": "currentArticlesHtml", "value": "" }
+        },
+
+        "Build_Articles": {
+          "type": "Apply_to_each",
+          "foreach": "@items('Build_Categories')?['articles']",
+          "runAfter": { "Reset_CurrentArticlesHtml": ["Succeeded"] },
+          "actions": {
+
+            "Build_Article_Html": {
+              "type": "Compose",
+              "inputs": "@concat('<div class=\"article-item\"><a class=\"article-title\" href=\"', items('Build_Articles')?['url'], '\">', items('Build_Articles')?['title'], '</a><p class=\"article-meta\">', items('Build_Articles')?['source'], ' &nbsp;&middot;&nbsp; ', items('Build_Articles')?['publishedAt'], '</p><p class=\"article-summary\">', items('Build_Articles')?['summary'], '</p></div>')"
+            },
+
+            "Append_Article_Html": {
+              "type": "AppendToStringVariable",
+              "runAfter": { "Build_Article_Html": ["Succeeded"] },
+              "inputs": { "name": "currentArticlesHtml", "value": "@outputs('Build_Article_Html')" }
+            },
+
+            "Increment_Article_Count": {
+              "type": "IncrementVariable",
+              "runAfter": { "Append_Article_Html": ["Succeeded"] },
+              "inputs": { "name": "articleCount", "value": 1 }
+            }
+          }
+        },
+
+        "Build_Category_Html": {
+          "type": "Compose",
+          "runAfter": { "Build_Articles": ["Succeeded"] },
+          "inputs": "@concat('<div class=\"category-section\"><div class=\"category-heading\">', items('Build_Categories')?['name'], '</div>', if(empty(coalesce(items('Build_Categories')?['description'], '')), '', concat('<p class=\"category-desc\">', items('Build_Categories')?['description'], '</p>')), variables('currentArticlesHtml'), '</div>')"
+        },
+
+        "Append_Category_Html": {
+          "type": "AppendToStringVariable",
+          "runAfter": { "Build_Category_Html": ["Succeeded"] },
+          "inputs": { "name": "categoryItemsHtml", "value": "@outputs('Build_Category_Html')" }
+        }
+      }
+    },
+
+    "Build_Recommendations": {
+      "type": "Apply_to_each",
+      "foreach": "@triggerBody()?['recommendations']",
+      "runAfter": { "Build_Categories": ["Succeeded"] },
+      "actions": {
+
+        "Build_Rec_Html": {
+          "type": "Compose",
+          "inputs": "@concat('<li class=\"rec-item\"><span class=\"rec-arrow\">&#8594;</span>', items('Build_Recommendations'), '</li>')"
+        },
+
+        "Append_Rec_Html": {
+          "type": "AppendToStringVariable",
+          "runAfter": { "Build_Rec_Html": ["Succeeded"] },
+          "inputs": { "name": "recItemsHtml", "value": "@outputs('Build_Rec_Html')" }
+        }
+      }
+    },
+
+    "R1":  {
+      "type": "Compose",
+      "runAfter": { "Build_Recommendations": ["Succeeded"] },
+      "inputs": "@replace('{{TEMPLATE_PLACEHOLDER}}', '{{REPORT_DATE}}', triggerBody()?['reportDate'])"
+    },
+    "R2":  { "type": "Compose", "runAfter": { "R1": ["Succeeded"] },
+             "inputs": "@replace(outputs('R1'), '{{WINDOW_START}}', triggerBody()?['windowStart'])" },
+    "R3":  { "type": "Compose", "runAfter": { "R2": ["Succeeded"] },
+             "inputs": "@replace(outputs('R2'), '{{WINDOW_END}}', triggerBody()?['windowEnd'])" },
+    "R4":  { "type": "Compose", "runAfter": { "R3": ["Succeeded"] },
+             "inputs": "@replace(outputs('R3'), '{{GENERATED_AT}}', coalesce(triggerBody()?['generatedAt'], utcNow()))" },
+    "R5":  { "type": "Compose", "runAfter": { "R4": ["Succeeded"] },
+             "inputs": "@replace(outputs('R4'), '{{TOPIC_NAME}}', triggerBody()?['topic'])" },
+    "R6":  { "type": "Compose", "runAfter": { "R5": ["Succeeded"] },
+             "inputs": "@replace(outputs('R5'), '{{ARTICLE_COUNT}}', string(variables('articleCount')))" },
+    "R7":  { "type": "Compose", "runAfter": { "R6": ["Succeeded"] },
+             "inputs": "@replace(outputs('R6'), '{{EXECUTIVE_SUMMARY}}', triggerBody()?['executiveSummary'])" },
+    "R8":  { "type": "Compose", "runAfter": { "R7": ["Succeeded"] },
+             "inputs": "@replace(outputs('R7'), '{{CATEGORY_ITEMS}}', variables('categoryItemsHtml'))" },
+    "R9":  { "type": "Compose", "runAfter": { "R8": ["Succeeded"] },
+             "inputs": "@replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))" },
+
+    "Respond_With_HTML": {
+      "type": "Response",
+      "runAfter": { "R9": ["Succeeded"] },
+      "inputs": {
+        "statusCode": 200,
+        "headers": { "Content-Type": "application/json" },
+        "body": {
+          "htmlBody":            "@outputs('R9')",
+          "articleCount":        "@variables('articleCount')",
+          "categoryCount":       "@length(triggerBody()?['categories'])",
+          "recommendationCount": "@length(triggerBody()?['recommendations'])"
+        }
+      }
+    }
+  }
+}

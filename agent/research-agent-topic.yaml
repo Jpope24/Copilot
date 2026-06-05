@@ -1,0 +1,121 @@
+kind: AdaptiveDialog
+modelDescription: >
+  Researches a configurable topic, categorizes findings with article summaries
+  and source links, produces recommendations, and returns all structured data —
+  including email subject and distribution list — to the calling Power Automate
+  flow. The flow handles HTML formatting and email delivery.
+
+beginDialog:
+  actions:
+
+    # ── Step 1: Set time window ────────────────────────────────────────────────
+    - kind: SetVariable
+      variable: topic.windowEnd
+      value: =utcNow()
+
+    - kind: SetVariable
+      variable: topic.windowStart
+      value: =addHours(utcNow(), -24)
+
+    - kind: SetVariable
+      variable: topic.reportDate
+      value: =text(utcNow(), "MMMM D, YYYY")
+
+    - kind: SetVariable
+      variable: topic.generatedAt
+      value: =utcNow()
+
+    # ── Step 2: Accept the research topic from the calling flow ────────────────
+    # Power Automate passes 'researchTopic' as an input variable when it calls
+    # this topic via the Copilot Studio connector.
+    - kind: SetVariable
+      variable: topic.researchTopic
+      value: =System.Activity.Value.researchTopic
+
+    - kind: SendActivity
+      activity: >
+        Researching "${topic.researchTopic}" for the 24-hour window ending
+        ${topic.windowEnd} UTC. Gathering sources…
+
+    # ── Step 3: Research via Bing-grounded Generative Answers ─────────────────
+    - kind: SearchAndSummarizeContent
+      variable: topic.rawResearch
+      userInput: >
+        Research the topic "${topic.researchTopic}" for the last 24 hours.
+        Find the most important news articles, announcements, publications,
+        and developments. For each item found:
+        - Provide the full article title
+        - Write a 2–3 sentence factual summary citing specific data points
+        - Include the direct URL to the source article
+        - Record the publication name and publish timestamp (UTC)
+        Group findings into 3–6 meaningful categories appropriate to this topic.
+        Also provide a 2–4 sentence executive summary of the overall findings
+        and 3–7 specific, actionable recommendations based on the research.
+
+    # ── Step 4: Structure the research into the required JSON payload ──────────
+    # The generative AI organizes raw research into the structured schema,
+    # adding categories, article details, recommendations, and email config.
+    - kind: SetVariable
+      variable: topic.structuredPayload
+      value: =topic.rawResearch
+
+    # ── Step 5: Build email metadata ──────────────────────────────────────────
+    - kind: SetVariable
+      variable: topic.emailSubject
+      value: ="${topic.researchTopic} — Research Brief | ${topic.reportDate}"
+
+    # ── Step 6: Return all output variables to the calling Power Automate flow ─
+    # The Shared-ResearchAgentScheduler flow receives these and handles
+    # HTML formatting (via Shared-FormatResearchReport) and email delivery
+    # (via Shared-StablecoinEmailFlow).
+    - kind: EndTask
+      outputs:
+        reportDate:       =topic.reportDate
+        windowStart:      =topic.windowStart
+        windowEnd:        =topic.windowEnd
+        generatedAt:      =topic.generatedAt
+        topic:            =topic.researchTopic
+        executiveSummary: =topic.structuredPayload.executiveSummary
+        categories:       =topic.structuredPayload.categories
+        recommendations:  =topic.structuredPayload.recommendations
+        emailSubject:     =topic.emailSubject
+        emailTo:          =topic.structuredPayload.emailTo
+        emailCc:          =topic.structuredPayload.emailCc
+
+# ── Output variable declarations (used by Power Automate connector) ──────────
+outputs:
+  - name: reportDate
+    type: String
+    description: Human-readable date (e.g. "June 5, 2026")
+  - name: windowStart
+    type: String
+    description: ISO 8601 research window start timestamp
+  - name: windowEnd
+    type: String
+    description: ISO 8601 research window end timestamp
+  - name: generatedAt
+    type: String
+    description: ISO 8601 timestamp when the agent completed
+  - name: topic
+    type: String
+    description: The topic that was researched
+  - name: executiveSummary
+    type: String
+    description: 2–4 sentence overall summary of findings
+  - name: categories
+    type: Array
+    description: >
+      Array of category objects, each containing name, optional description,
+      and articles array (title, summary, url, source, publishedAt)
+  - name: recommendations
+    type: Array
+    description: Array of recommendation strings
+  - name: emailSubject
+    type: String
+    description: Complete email subject line
+  - name: emailTo
+    type: Array
+    description: Primary recipient email addresses
+  - name: emailCc
+    type: Array
+    description: CC recipient email addresses
