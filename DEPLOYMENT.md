@@ -299,52 +299,57 @@ This flow builds the HTML email from the agent's research payload.
 - Open `templates/research-report.html`, copy the entire file content
 - Paste it as the **Inputs** value of this Compose action
 
-**Action 6 — Apply to each (Build_Categories)**
+**Action 6 — Apply to each**
 - Select output: (expression) `triggerBody()?['categories']`
+- **IMPORTANT**: After adding this action, click **"…" (three dots) → Rename** and set the name to exactly: `Build_Categories`
+  (The `items()` expression in child steps must match this name exactly.)
 - Inside the loop, add:
 
   **6a — Set variable** → Name: `currentArticlesHtml`, Value: *(empty string)*
 
-  **6b — Apply to each (Build_Articles)**
-  - Select output: (expression) `items('Apply_to_each')?['articles']`
+  **6b — Apply to each** *(nested inside Action 6)*
+  - Select output: (expression) `items('Build_Categories')?['articles']`
+  - **IMPORTANT**: After adding this action, click **"…" → Rename** and set the name to exactly: `Build_Articles`
   - Inside this inner loop, add:
 
-    **6b-i — Compose (Build_Article_Html)**
-    Expression:
+    **6b-i — Compose** *(nested inside 6b)*
+    - **Rename** this Compose step to: `Build_Article_Html`
+    - Expression (enter in the **fx / Expression** tab — not Dynamic content):
     ```
     concat(
       '<div class="article-item"><a class="article-title" href="',
-      items('Apply_to_each_2')?['url'],
+      items('Build_Articles')?['url'],
       '">',
-      items('Apply_to_each_2')?['title'],
+      items('Build_Articles')?['title'],
       '</a><p class="article-meta">',
-      items('Apply_to_each_2')?['source'],
+      items('Build_Articles')?['source'],
       ' &nbsp;&middot;&nbsp; ',
-      items('Apply_to_each_2')?['publishedAt'],
+      items('Build_Articles')?['publishedAt'],
       '</p><p class="article-summary">',
-      items('Apply_to_each_2')?['summary'],
+      items('Build_Articles')?['summary'],
       '</p></div>'
     )
     ```
 
     **6b-ii — Append to string variable**
     - Name: `currentArticlesHtml`
-    - Value: `@{outputs('Compose_2')}` ← the article HTML compose
+    - Value (expression): `outputs('Build_Article_Html')`
 
     **6b-iii — Increment variable**
     - Name: `articleCount`
     - Value: `1`
 
-  **6c — Compose (Build_Category_Html)**
-  Expression:
+  **6c — Compose** *(back in the outer Build_Categories loop, after 6b)*
+  - **Rename** this Compose step to: `Build_Category_Html`
+  - Expression:
   ```
   concat(
     '<div class="category-section"><div class="category-heading">',
-    items('Apply_to_each')?['name'],
+    items('Build_Categories')?['name'],
     '</div>',
-    if(empty(coalesce(items('Apply_to_each')?['description'],'')),
+    if(empty(coalesce(items('Build_Categories')?['description'],'')),
        '',
-       concat('<p class="category-desc">',items('Apply_to_each')?['description'],'</p>')),
+       concat('<p class="category-desc">',items('Build_Categories')?['description'],'</p>')),
     variables('currentArticlesHtml'),
     '</div>'
   )
@@ -352,18 +357,20 @@ This flow builds the HTML email from the agent's research payload.
 
   **6d — Append to string variable**
   - Name: `categoryItemsHtml`
-  - Value: `@{outputs('Compose_3')}` ← the category HTML compose
+  - Value (expression): `outputs('Build_Category_Html')`
 
-**Action 7 — Apply to each (Build_Recommendations)**
+**Action 7 — Apply to each**
 - Select output: (expression) `triggerBody()?['recommendations']`
+- **IMPORTANT**: After adding this action, click **"…" → Rename** and set the name to: `Build_Recommendations`
 - Inside loop:
 
   **7a — Compose**
-  Expression: `concat('<li class="rec-item"><span class="rec-arrow">&#8594;</span>',items('Apply_to_each_3'),'</li>')`
+  - **Rename** this Compose step to: `Build_Rec_Html`
+  - Expression: `concat('<li class="rec-item"><span class="rec-arrow">&#8594;</span>',items('Build_Recommendations'),'</li>')`
 
   **7b — Append to string variable**
   - Name: `recItemsHtml`
-  - Value: the rec HTML compose output
+  - Value (expression): `outputs('Build_Rec_Html')`
 
 **Actions 8–16 — Compose chain (template injection)**
 
@@ -383,32 +390,29 @@ placeholder in the HTML. Name them R1 through R9:
 | R9 | `replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))` |
 
 **Action 17 — Compose (Build_Response_Body)**
-
-Same pattern as the email flow — assemble the body in a Compose, then reference
-it as a single expression in the Response body.
-
-- Add a **Compose** step
-- Inputs field (expression tab or plain field with dynamic content picker):
+- **Rename** this Compose step to: `Build_Response_Body`
+- Click the **Inputs** field. In the text area (default mode, **not** the fx/Expression tab),
+  type or paste:
   ```
   {
-    "htmlBody": "@outputs('R9')",
-    "articleCount": "@variables('articleCount')",
-    "categoryCount": "@length(triggerBody()?['categories'])",
-    "recommendationCount": "@length(triggerBody()?['recommendations'])"
+    "htmlBody": "@{outputs('R9')}",
+    "articleCount": "@{variables('articleCount')}",
+    "categoryCount": "@{length(triggerBody()?['categories'])}",
+    "recommendationCount": "@{length(triggerBody()?['recommendations'])}"
   }
   ```
-  > Each value starts with `@` to mark it as an expression. `R9` is the name of
-  > your last template-replacement Compose step. Confirm the name by hovering
-  > over that step.
+  > Each `@{...}` is an inline expression. `R9` is the name of your last
+  > template-replacement Compose step.
 
 **Action 18 — Response**
 - Status Code: `200`
-- Body field — click the **expression tab (fx)** and enter:
+- Headers: `Content-Type` = `application/json`
+- Body: click the Body field, switch to the **Expression (fx)** tab, and enter **exactly**:
   ```
-  outputs('Compose_16')
+  outputs('Build_Response_Body')
   ```
-  > Replace `Compose_16` with the internal name Power Automate assigned to your
-  > Build_Response_Body Compose step.
+  > This single-expression reference is required. Putting `@{...}` expressions directly
+  > inside a JSON body on a Response action causes `ActionSchemaInvalid`.
 
 4. Save and copy the HTTP trigger URL.
 
