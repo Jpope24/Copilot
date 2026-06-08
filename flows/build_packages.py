@@ -335,18 +335,19 @@ flow1_workflow = {
             "inputs": "@replace(outputs('Replace_NewsItems'), '{{MACRO_CONTEXT}}', triggerBody()?['macroContext'])"
         },
 
-        # ── Return rendered HTML ───────────────────────────────────────────
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"Replace_MacroContext": ["Succeeded"]},
+            "inputs": "@createObject('htmlBody', outputs('Replace_MacroContext'), 'coinCount', length(triggerBody()?['coins']), 'newsCount', length(triggerBody()?['newsItems']))"
+        },
         "Respond": {
             "type": "Response",
-            "runAfter": {"Replace_MacroContext": ["Succeeded"]},
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":  "@outputs('Replace_MacroContext')",
-                    "coinCount": "@length(triggerBody()?['coins'])",
-                    "newsCount": "@length(triggerBody()?['newsItems'])"
-                }
+                "body": "@outputs('Build_Response_Body')"
             }
         }
     },
@@ -481,31 +482,31 @@ flow2_workflow = {
             }
         },
 
-        # ── Respond with send status ───────────────────────────────────────
+        # ── Build response bodies (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Success_Body": {
+            "type": "Compose",
+            "runAfter": {"Send_Email": ["Succeeded"]},
+            "inputs": "@createObject('status', 'sent', 'to', outputs('To_String'), 'cc', outputs('Cc_String'), 'subject', triggerBody()?['subject'], 'timestamp', utcNow())"
+        },
         "Respond_Success": {
             "type": "Response",
-            "runAfter": {"Send_Email": ["Succeeded"]},
+            "runAfter": {"Build_Success_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
-                "body": {
-                    "status":    "sent",
-                    "to":        "@outputs('To_String')",
-                    "cc":        "@outputs('Cc_String')",
-                    "subject":   "@triggerBody()?['subject']",
-                    "timestamp": "@utcNow()"
-                }
+                "body": "@outputs('Build_Success_Body')"
             }
+        },
+        "Build_Failure_Body": {
+            "type": "Compose",
+            "runAfter": {"Send_Email": ["Failed", "TimedOut"]},
+            "inputs": "@createObject('status', 'failed', 'error', actions('Send_Email')?['error'], 'timestamp', utcNow())"
         },
         "Respond_Failure": {
             "type": "Response",
-            "runAfter": {"Send_Email": ["Failed", "TimedOut"]},
+            "runAfter": {"Build_Failure_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 500,
-                "body": {
-                    "status":    "failed",
-                    "error":     "@actions('Send_Email')?['error']",
-                    "timestamp": "@utcNow()"
-                }
+                "body": "@outputs('Build_Failure_Body')"
             }
         }
     },
@@ -799,18 +800,19 @@ flow3_workflow = {
         "R17": {"type": "Compose", "runAfter": {"R16": ["Succeeded"]},
                 "inputs": "@replace(outputs('R16'), '{{EVENT_ITEMS}}', outputs('Events_Or_Placeholder'))"},
 
-        # ── Return rendered HTML ───────────────────────────────────────────
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"R17": ["Succeeded"]},
+            "inputs": "@createObject('htmlBody', outputs('R17'), 'devCount', length(triggerBody()?['developments']), 'eventCount', length(triggerBody()?['events']))"
+        },
         "Respond": {
             "type": "Response",
-            "runAfter": {"R17": ["Succeeded"]},
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":   "@outputs('R17')",
-                    "devCount":   "@length(triggerBody()?['developments'])",
-                    "eventCount": "@length(triggerBody()?['events'])"
-                }
+                "body": "@outputs('Build_Response_Body')"
             }
         }
     },
@@ -1070,19 +1072,19 @@ flow4_workflow = {
         "R9": {"type": "Compose", "runAfter": {"R8": ["Succeeded"]},
                "inputs": "@replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))"},
 
-        # ── Return rendered HTML ───────────────────────────────────────────
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"R9": ["Succeeded"]},
+            "inputs": "@createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))"
+        },
         "Respond": {
             "type": "Response",
-            "runAfter": {"R9": ["Succeeded"]},
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":            "@outputs('R9')",
-                    "articleCount":        "@variables('articleCount')",
-                    "categoryCount":       "@length(triggerBody()?['categories'])",
-                    "recommendationCount": "@length(triggerBody()?['recommendations'])"
-                }
+                "body": "@outputs('Build_Response_Body')"
             }
         }
     },

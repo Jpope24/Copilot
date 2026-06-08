@@ -174,18 +174,19 @@
     "R9":  { "type": "Compose", "runAfter": { "R8": ["Succeeded"] },
              "inputs": "@replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))" },
 
+    "Build_Response_Body": {
+      "type": "Compose",
+      "runAfter": { "R9": ["Succeeded"] },
+      "inputs": "@createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))"
+    },
+
     "Respond_With_HTML": {
       "type": "Response",
-      "runAfter": { "R9": ["Succeeded"] },
+      "runAfter": { "Build_Response_Body": ["Succeeded"] },
       "inputs": {
         "statusCode": 200,
         "headers": { "Content-Type": "application/json" },
-        "body": {
-          "htmlBody":            "@outputs('R9')",
-          "articleCount":        "@variables('articleCount')",
-          "categoryCount":       "@length(triggerBody()?['categories'])",
-          "recommendationCount": "@length(triggerBody()?['recommendations'])"
-        }
+        "body": "@outputs('Build_Response_Body')"
       }
     }
   }

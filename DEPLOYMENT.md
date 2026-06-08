@@ -177,18 +177,31 @@ This flow receives an HTML body + subject + recipient lists and sends an email.
 - Toggle **Is HTML** to **Yes**
 - Importance: Normal
 
-**Action 6 — Response (success)**
-- Status Code: `200`
-- Body (JSON):
-  ```json
-  {
-    "status": "sent",
-    "to": "@{outputs('Compose')}",
-    "cc": "@{outputs('Compose_1')}",
-    "subject": "@{triggerBody()?['subject']}",
-    "timestamp": "@{utcNow()}"
-  }
+**Action 6 — Compose (Build_Success_Body)**
+
+> **Why a Compose first?** Power Automate's Response action validates its body
+> as a schema and rejects embedded expressions — you'll get
+> `ActionSchemaInvalid`. The fix is to build the body in a Compose action
+> (expressions are allowed there), then reference the Compose output as a
+> single expression in the Response body.
+
+- Click **+ New step** → search **Compose**
+- In the **Inputs** field, click the expression tab (fx) and enter:
   ```
+  createObject('status', 'sent', 'to', outputs('Compose'), 'cc', outputs('Compose_1'), 'subject', triggerBody()?['subject'], 'timestamp', utcNow())
+  ```
+  > Replace `outputs('Compose')` and `outputs('Compose_1')` with the actual
+  > names Power Automate assigned to your To_String and Cc_String Compose steps.
+  > Hover over each Compose step to confirm its name.
+
+**Action 7 — Response (success)**
+- Status Code: `200`
+- Body field: click the expression tab (fx) and enter:
+  ```
+  outputs('Compose_2')
+  ```
+  > Replace `Compose_2` with whatever Power Automate named your
+  > Build_Success_Body Compose step.
 
 4. Click **Save**
 5. Click the **When a HTTP request is received** trigger step and copy the
@@ -359,17 +372,24 @@ placeholder in the HTML. Name them R1 through R9:
 | R8 | `replace(outputs('R7'), '{{CATEGORY_ITEMS}}', variables('categoryItemsHtml'))` |
 | R9 | `replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))` |
 
-**Action 17 — Response**
-- Status Code: `200`
-- Body (JSON):
-  ```json
-  {
-    "htmlBody":            "@{outputs('R9')}",
-    "articleCount":        "@{variables('articleCount')}",
-    "categoryCount":       "@{length(triggerBody()?['categories'])}",
-    "recommendationCount": "@{length(triggerBody()?['recommendations'])}"
-  }
+**Action 17 — Compose (Build_Response_Body)**
+
+Same pattern as the email flow — build the body in Compose first.
+
+- Add a **Compose** step
+- Inputs (expression tab):
   ```
+  createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))
+  ```
+
+**Action 18 — Response**
+- Status Code: `200`
+- Body field (expression tab):
+  ```
+  outputs('Compose_17')
+  ```
+  > Replace `Compose_17` with whatever Power Automate named your
+  > Build_Response_Body Compose step.
 
 4. Save and copy the HTTP trigger URL.
 
