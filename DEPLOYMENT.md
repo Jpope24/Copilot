@@ -180,28 +180,38 @@ This flow receives an HTML body + subject + recipient lists and sends an email.
 **Action 6 — Compose (Build_Success_Body)**
 
 > **Why a Compose first?** Power Automate's Response action validates its body
-> as a schema and rejects embedded expressions — you'll get
-> `ActionSchemaInvalid`. The fix is to build the body in a Compose action
-> (expressions are allowed there), then reference the Compose output as a
-> single expression in the Response body.
+> as a schema and rejects embedded expressions (`ActionSchemaInvalid`). The fix
+> is to assemble the body in a Compose action — expressions are fine there —
+> then pass the Compose output as a single reference in the Response body field.
 
 - Click **+ New step** → search **Compose**
-- In the **Inputs** field, click the expression tab (fx) and enter:
+- In the **Inputs** field, switch to the **expression tab (fx)** and type a JSON
+  object where each value starts with `@` to signal it is an expression:
   ```
-  createObject('status', 'sent', 'to', outputs('Compose'), 'cc', outputs('Compose_1'), 'subject', triggerBody()?['subject'], 'timestamp', utcNow())
+  {
+    "status": "sent",
+    "to": "@outputs('Compose')",
+    "cc": "@outputs('Compose_1')",
+    "subject": "@triggerBody()?['subject']",
+    "timestamp": "@utcNow()"
+  }
   ```
   > Replace `outputs('Compose')` and `outputs('Compose_1')` with the actual
-  > names Power Automate assigned to your To_String and Cc_String Compose steps.
-  > Hover over each Compose step to confirm its name.
+  > names Power Automate auto-assigned to your To_String and Cc_String Compose
+  > steps. Hover over each step title to confirm the internal name.
+
+  Alternatively, type the JSON directly in the plain Inputs field (no expression
+  mode) and use **Add dynamic content** to insert each value from the picker —
+  Power Automate will wrap the picked value in the correct `@{}` syntax for you.
 
 **Action 7 — Response (success)**
 - Status Code: `200`
-- Body field: click the expression tab (fx) and enter:
+- Body field — click the **expression tab (fx)** and enter:
   ```
-  outputs('Compose_2')
+  outputs('Compose_5')
   ```
-  > Replace `Compose_2` with whatever Power Automate named your
-  > Build_Success_Body Compose step.
+  > Replace `Compose_5` with the internal name Power Automate assigned to your
+  > Build_Success_Body Compose step (check the step title bar).
 
 4. Click **Save**
 5. Click the **When a HTTP request is received** trigger step and copy the
@@ -374,21 +384,30 @@ placeholder in the HTML. Name them R1 through R9:
 
 **Action 17 — Compose (Build_Response_Body)**
 
-Same pattern as the email flow — build the body in Compose first.
+Same pattern as the email flow — assemble the body in a Compose, then reference
+it as a single expression in the Response body.
 
 - Add a **Compose** step
-- Inputs (expression tab):
+- Inputs field (expression tab or plain field with dynamic content picker):
   ```
-  createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))
+  {
+    "htmlBody": "@outputs('R9')",
+    "articleCount": "@variables('articleCount')",
+    "categoryCount": "@length(triggerBody()?['categories'])",
+    "recommendationCount": "@length(triggerBody()?['recommendations'])"
+  }
   ```
+  > Each value starts with `@` to mark it as an expression. `R9` is the name of
+  > your last template-replacement Compose step. Confirm the name by hovering
+  > over that step.
 
 **Action 18 — Response**
 - Status Code: `200`
-- Body field (expression tab):
+- Body field — click the **expression tab (fx)** and enter:
   ```
-  outputs('Compose_17')
+  outputs('Compose_16')
   ```
-  > Replace `Compose_17` with whatever Power Automate named your
+  > Replace `Compose_16` with the internal name Power Automate assigned to your
   > Build_Response_Body Compose step.
 
 4. Save and copy the HTTP trigger URL.

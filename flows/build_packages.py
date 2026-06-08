@@ -339,7 +339,11 @@ flow1_workflow = {
         "Build_Response_Body": {
             "type": "Compose",
             "runAfter": {"Replace_MacroContext": ["Succeeded"]},
-            "inputs": "@createObject('htmlBody', outputs('Replace_MacroContext'), 'coinCount', length(triggerBody()?['coins']), 'newsCount', length(triggerBody()?['newsItems']))"
+            "inputs": {
+                "htmlBody":  "@outputs('Replace_MacroContext')",
+                "coinCount": "@length(triggerBody()?['coins'])",
+                "newsCount": "@length(triggerBody()?['newsItems'])"
+            }
         },
         "Respond": {
             "type": "Response",
@@ -486,7 +490,13 @@ flow2_workflow = {
         "Build_Success_Body": {
             "type": "Compose",
             "runAfter": {"Send_Email": ["Succeeded"]},
-            "inputs": "@createObject('status', 'sent', 'to', outputs('To_String'), 'cc', outputs('Cc_String'), 'subject', triggerBody()?['subject'], 'timestamp', utcNow())"
+            "inputs": {
+                "status":    "sent",
+                "to":        "@outputs('To_String')",
+                "cc":        "@outputs('Cc_String')",
+                "subject":   "@triggerBody()?['subject']",
+                "timestamp": "@utcNow()"
+            }
         },
         "Respond_Success": {
             "type": "Response",
@@ -499,7 +509,11 @@ flow2_workflow = {
         "Build_Failure_Body": {
             "type": "Compose",
             "runAfter": {"Send_Email": ["Failed", "TimedOut"]},
-            "inputs": "@createObject('status', 'failed', 'error', actions('Send_Email')?['error'], 'timestamp', utcNow())"
+            "inputs": {
+                "status":    "failed",
+                "error":     "@actions('Send_Email')?['error']",
+                "timestamp": "@utcNow()"
+            }
         },
         "Respond_Failure": {
             "type": "Response",
@@ -804,7 +818,11 @@ flow3_workflow = {
         "Build_Response_Body": {
             "type": "Compose",
             "runAfter": {"R17": ["Succeeded"]},
-            "inputs": "@createObject('htmlBody', outputs('R17'), 'devCount', length(triggerBody()?['developments']), 'eventCount', length(triggerBody()?['events']))"
+            "inputs": {
+                "htmlBody":   "@outputs('R17')",
+                "devCount":   "@length(triggerBody()?['developments'])",
+                "eventCount": "@length(triggerBody()?['events'])"
+            }
         },
         "Respond": {
             "type": "Response",
@@ -1076,7 +1094,12 @@ flow4_workflow = {
         "Build_Response_Body": {
             "type": "Compose",
             "runAfter": {"R9": ["Succeeded"]},
-            "inputs": "@createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))"
+            "inputs": {
+                "htmlBody":            "@outputs('R9')",
+                "articleCount":        "@variables('articleCount')",
+                "categoryCount":       "@length(triggerBody()?['categories'])",
+                "recommendationCount": "@length(triggerBody()?['recommendations'])"
+            }
         },
         "Respond": {
             "type": "Response",

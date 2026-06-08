@@ -177,7 +177,12 @@
     "Build_Response_Body": {
       "type": "Compose",
       "runAfter": { "R9": ["Succeeded"] },
-      "inputs": "@createObject('htmlBody', outputs('R9'), 'articleCount', variables('articleCount'), 'categoryCount', length(triggerBody()?['categories']), 'recommendationCount', length(triggerBody()?['recommendations']))"
+      "inputs": {
+        "htmlBody":            "@outputs('R9')",
+        "articleCount":        "@variables('articleCount')",
+        "categoryCount":       "@length(triggerBody()?['categories'])",
+        "recommendationCount": "@length(triggerBody()?['recommendations'])"
+      }
     },
 
     "Respond_With_HTML": {
