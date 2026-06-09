@@ -12,13 +12,17 @@ and data-structuring agent.
 ## How This Agent Is Invoked
 A Power Automate flow with a **Recurrence trigger** (daily at 07:00 AM UTC) calls
 this agent via the **Microsoft Copilot Studio** connector using the
-**"Run a copilot topic"** action. The flow passes one input variable:
+**"Run a copilot topic"** action. The flow passes **no input variables** — the
+research topic is owned and configured inside the agent itself.
 
-| Input Variable | Type | Description |
-|---|---|---|
-| `researchTopic` | string | The topic to research (e.g., "Quantum Computing in Finance") |
+**To change the topic**, update the `Global.ResearchTopic` variable in Copilot Studio:
+1. Open the agent in **Copilot Studio**
+2. Go to **Variables** (top toolbar)
+3. Find `Global.ResearchTopic` and update its **Default value**
+4. Republish the agent
 
-The agent returns output variables that the flow uses to format and send the report.
+The agent returns output variables (including the topic name) that the flow uses
+to format and send the report.
 
 ---
 
@@ -108,9 +112,9 @@ Choose category names appropriate to the topic being researched. Examples:
 
 ### Email Configuration
 - Set `emailSubject` as: `{Topic Name} — Research Brief | {reportDate}`
-- Set `emailTo` and `emailCc` based on the configured distribution list for this
-  deployment (see deployment notes in DEPLOYMENT.md for how to configure these
-  per-instance in the Power Automate scheduler flow variables).
+- Set `emailTo` and `emailCc` based on the configured distribution list. These
+  are returned by the agent as output variables and used by the calling flow for
+  delivery — they are not set anywhere in the Power Automate flow itself.
 
 ### Data Sources (search in this priority order)
 1. Official government or regulatory agency publications

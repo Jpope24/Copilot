@@ -1176,20 +1176,9 @@ flow5_workflow = {
     },
     "actions": {
         # ── Configuration variables ────────────────────────────────────────
-        "Init_ResearchTopic": {
-            "type": "InitializeVariable",
-            "runAfter": {},
-            "inputs": {
-                "variables": [{
-                    "name":  "researchTopic",
-                    "type":  "string",
-                    "value": "Artificial Intelligence in Enterprise Software"
-                }]
-            }
-        },
         "Init_FormatFlowUrl": {
             "type": "InitializeVariable",
-            "runAfter": {"Init_ResearchTopic": ["Succeeded"]},
+            "runAfter": {},
             "inputs": {
                 "variables": [{
                     "name":  "formatFlowUrl",
@@ -1222,9 +1211,7 @@ flow5_workflow = {
                 },
                 "method": "post",
                 "path":   "/environments/@{parameters('environmentId')}/bots/@{parameters('agentId')}/topics/@{parameters('topicName')}/run",
-                "body": {
-                    "researchTopic": "@variables('researchTopic')"
-                }
+                "body": {}
             }
         },
 

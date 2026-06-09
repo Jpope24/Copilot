@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "_meta": {
     "flowName": "Shared-ResearchAgentScheduler",
-    "description": "Scheduled orchestrating flow. Runs daily at 07:00 UTC, calls the Copilot Research Agent via the Microsoft Copilot Studio connector, passes the returned research payload to Shared-FormatResearchReport to generate HTML, then sends the formatted report via Shared-StablecoinEmailFlow. The agent determines the email subject and distribution list.",
+    "description": "Scheduled orchestrating flow. Runs daily at 07:00 UTC, calls the Copilot Research Agent via the Microsoft Copilot Studio connector (no input variables — the agent owns its research topic), receives the full research payload back from the agent, passes it to Shared-FormatResearchReport to generate HTML, then sends the formatted report via Shared-StablecoinEmailFlow. The agent determines the topic, email subject, and distribution list.",
     "version": "1.0.0",
     "connectors": [
       "Microsoft Copilot Studio (shared_CopilotStudio)",
@@ -25,22 +25,9 @@
 
   "actions": {
 
-    "Initialize_ResearchTopic": {
-      "type": "InitializeVariable",
-      "runAfter": {},
-      "description": "Set the topic the agent will research. Change this value to target any subject.",
-      "inputs": {
-        "variables": [{
-          "name":  "researchTopic",
-          "type":  "string",
-          "value": "Artificial Intelligence in Enterprise Software"
-        }]
-      }
-    },
-
     "Initialize_FormatFlowUrl": {
       "type": "InitializeVariable",
-      "runAfter": { "Initialize_ResearchTopic": ["Succeeded"] },
+      "runAfter": {},
       "description": "Paste the HTTP POST URL of your deployed Shared-FormatResearchReport flow here.",
       "inputs": {
         "variables": [{
@@ -76,9 +63,7 @@
         },
         "method": "post",
         "path":   "/environments/@{parameters('environmentId')}/bots/@{parameters('agentId')}/topics/@{parameters('topicName')}/run",
-        "body": {
-          "researchTopic": "@variables('researchTopic')"
-        }
+        "body": {}
       }
     },
 

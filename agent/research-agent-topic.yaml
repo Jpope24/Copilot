@@ -1,9 +1,11 @@
 kind: AdaptiveDialog
 modelDescription: >
-  Researches a configurable topic, categorizes findings with article summaries
-  and source links, produces recommendations, and returns all structured data —
-  including email subject and distribution list — to the calling Power Automate
-  flow. The flow handles HTML formatting and email delivery.
+  Researches a topic configured as a global variable inside the agent, categorizes
+  findings with article summaries and source links, produces recommendations, and
+  returns all structured data — including the topic name, email subject, and
+  distribution list — to the calling Power Automate flow. The flow handles HTML
+  formatting and email delivery. The topic is owned by the agent; no input is
+  required from the calling flow.
 
 beginDialog:
   actions:
@@ -25,12 +27,12 @@ beginDialog:
       variable: topic.generatedAt
       value: =utcNow()
 
-    # ── Step 2: Accept the research topic from the calling flow ────────────────
-    # Power Automate passes 'researchTopic' as an input variable when it calls
-    # this topic via the Copilot Studio connector.
+    # ── Step 2: Read the research topic from the agent's global variable ───────
+    # Configure Global.ResearchTopic in the Copilot Studio Variables panel
+    # (set the default value there). The calling flow passes no input variables.
     - kind: SetVariable
       variable: topic.researchTopic
-      value: =System.Activity.Value.researchTopic
+      value: =Global.ResearchTopic
 
     - kind: SendActivity
       activity: >

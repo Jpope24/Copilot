@@ -427,20 +427,20 @@ placeholder in the HTML. Name them R1 through R9:
 
 **Add these actions in order:**
 
-**Action 1 — Initialize variable** → Name: `researchTopic`, Type: String,
-Value: your topic (e.g. `Artificial Intelligence in Enterprise Software`)
-
-**Action 2 — Initialize variable** → Name: `formatFlowUrl`, Type: String,
+**Action 1 — Initialize variable** → Name: `formatFlowUrl`, Type: String,
 Value: *(the HTTP trigger URL from Step O2-4)*
 
-**Action 3 — Initialize variable** → Name: `emailFlowUrl`, Type: String,
+**Action 2 — Initialize variable** → Name: `emailFlowUrl`, Type: String,
 Value: *(the HTTP trigger URL from Step O2-3)*
 
-**Action 4 — Run a copilot topic** (Microsoft Copilot Studio connector)
+**Action 3 — Run a copilot topic** (Microsoft Copilot Studio connector)
 - Sign in with your work account when prompted
 - Bot: select your published Research Agent
-- Topic: select `Research & Return Report`
-- Input variables → add `researchTopic` = `@{variables('researchTopic')}`
+- Topic: select `Research Agent`
+- Input variables: *(leave empty — the agent owns its research topic)*
+  > The topic is configured as `Global.ResearchTopic` inside the agent in
+  > Copilot Studio. The flow sends no inputs; the agent returns the topic
+  > name (and everything else) as output variables.
 
 **Action 5 — Parse JSON**
 - Content: `@{body('Run_a_copilot_topic')}`
@@ -760,7 +760,22 @@ confirm you are in the same Power Platform environment you used in Parts 2–3.
 
 - Replace the placeholder addresses with your actual recipient email addresses
 
-**5. Enable Generative Answers with Bing**
+**5. Create the `Global.ResearchTopic` variable**
+
+The agent reads the research topic from a global variable — no topic is passed in
+from Power Automate. You set the default value here, in the agent.
+
+- Click **Variables** in the top toolbar
+- Click **+ Add a variable** → set:
+  - **Name**: `ResearchTopic`
+  - **Scope**: `Global`
+  - **Type**: `String`
+  - **Default value**: your topic, e.g. `Artificial Intelligence in Enterprise Software`
+- Click **Save**
+
+> To change the topic later, update this variable's **Default value** and republish.
+
+**7. Enable Generative Answers with Bing**
 
 - Click **Knowledge** (left sidebar or top tab)
 - Click **Add knowledge**
@@ -768,18 +783,18 @@ confirm you are in the same Power Platform environment you used in Parts 2–3.
 - Toggle **Bing Search** to **On**
 - Click **Save**
 
-**6. Create the topic**
+**8. Create the topic**
 
 - Click **Topics** (left sidebar)
 - Click **Add a topic** → **Create from blank**
-- Name the topic: `Research & Return Report`
+- Name the topic: `Research Agent`
 - Click **More options** (··· menu on the topic) → **Open YAML editor**
 - Select all the existing YAML and delete it
 - Open `agent/research-agent-topic.yaml` from the repository, copy the entire file
 - Paste it into the YAML editor
 - Click **Save**
 
-**7. Allow Power Automate to call this agent**
+**9. Allow Power Automate to call this agent**
 
 - Click **Settings** (gear icon, top-right)
 - Go to **Security** → **Authentication**
@@ -789,7 +804,7 @@ confirm you are in the same Power Platform environment you used in Parts 2–3.
   from Power Automate flows**
 - Click **Save**
 
-**8. Publish the agent**
+**10. Publish the agent**
 
 - Click **Publish** (top-right)
 - Wait for the publish confirmation banner
@@ -840,16 +855,19 @@ To create a new Copilot Studio connection:
 
 Go to **My flows** → `Shared-ResearchAgentScheduler` → **Edit**
 
-**5. Update the three configuration variables**
+**5. Update the two configuration variables**
 
-The first three actions in the flow are `Initialize Variable` steps.
+The first two actions in the flow are `Initialize Variable` steps.
 Click each one and update the **Value** field:
 
 | Action name | Field to change | What to enter |
 |---|---|---|
-| `Init_ResearchTopic` | Value | The topic you want researched, e.g. `"Cybersecurity Threats in Financial Services"` |
 | `Init_FormatFlowUrl` | Value | The HTTP trigger URL copied from Part 3 Step 5 |
 | `Init_EmailFlowUrl` | Value | The HTTP trigger URL copied from Part 2 Step 5 |
+
+> **Research topic is set in the agent, not the flow.** To change what topic
+> is researched, update `Global.ResearchTopic` in Copilot Studio (see
+> [Changing the Research Topic](#changing-the-research-topic)).
 
 **6. Update the flow parameters**
 
@@ -957,16 +975,17 @@ to confirm the HTML renders correctly.
 
 ## Changing the Research Topic
 
-The topic is a single variable in the scheduler flow — no agent or template
-changes are needed.
+The topic is configured as a global variable **inside the Copilot Studio agent** —
+no changes to the Power Automate flow or template are needed.
 
-1. Open **Shared-ResearchAgentScheduler** in Edit mode
-2. Click the **Init_ResearchTopic** action (first step)
-3. Change the **Value** to your new topic, e.g.:
+1. Open **Copilot Studio** → open your Research Agent
+2. Click **Variables** in the top toolbar
+3. Find `Global.ResearchTopic` in the variable list
+4. Click it and update the **Default value** to your new topic, e.g.:
    ```
    Global Supply Chain Disruptions
    ```
-4. Click **Save**
+5. Click **Save**, then **Publish** the agent
 
 The next scheduled run (or your next manual test run) will research the new topic.
 
@@ -1007,17 +1026,20 @@ This means you update them once in Copilot Studio — no flow edits needed.
 
 ## Running Multiple Topics
 
-Each topic needs its own scheduler flow instance. The format and email flows
+Each topic needs its own agent + scheduler flow pair. The format and email flows
 are shared — no additional deployments needed for those.
 
-**1. Duplicate the scheduler flow**
+**1. Create a new agent in Copilot Studio**
+
+Duplicate your Research Agent (or create a new one from the same YAML) and set
+`Global.ResearchTopic` to the new topic in its Variables panel. Publish it.
+
+**2. Duplicate the scheduler flow**
 
 - **My flows** → `Shared-ResearchAgentScheduler` → **··· More** → **Save as**
 - Name it something descriptive, e.g. `ResearchScheduler-Cybersecurity`
-
-**2. Update the topic variable**
-
-Open the duplicate in Edit mode → change `Init_ResearchTopic` Value
+- In the duplicate, update **Call_Research_Agent** to point to the new agent
+  (update the `agentId` parameter)
 
 **3. Stagger the schedules (optional)**
 
