@@ -1137,10 +1137,12 @@ write_zip(
 FLOW5_GUID    = "e5f6a7b8-c9d0-1234-abcd-456789012345"
 FLOW5_DISPLAY = "Shared-ResearchAgentScheduler"
 FLOW5_DESC    = (
-    "Scheduled daily flow. Calls the Copilot Research Agent, receives the "
-    "research payload (including email subject and distribution list from the "
-    "agent), formats it via Shared-FormatResearchReport, and sends the HTML "
-    "report via Shared-StablecoinEmailFlow."
+    "Scheduled daily flow. Iterates over every agent in the agentConfigs "
+    "variable. For each agent: calls it via the Copilot Studio connector, "
+    "formats the returned research payload via Shared-FormatResearchReport, "
+    "and sends the HTML report via Shared-StablecoinEmailFlow to the "
+    "distribution list returned by that agent. One flow run delivers one "
+    "email per configured agent."
 )
 
 flow5_workflow = {
@@ -1152,14 +1154,6 @@ flow5_workflow = {
         "$authentication": {"defaultValue": {}, "type": "SecureObject"},
         "environmentId": {
             "defaultValue": "REPLACE_WITH_YOUR_POWER_PLATFORM_ENVIRONMENT_ID",
-            "type": "String"
-        },
-        "agentId": {
-            "defaultValue": "REPLACE_WITH_YOUR_COPILOT_STUDIO_AGENT_ID",
-            "type": "String"
-        },
-        "topicName": {
-            "defaultValue": "Research Agent",
             "type": "String"
         }
     },
@@ -1176,9 +1170,25 @@ flow5_workflow = {
     },
     "actions": {
         # ── Configuration variables ────────────────────────────────────────
-        "Init_FormatFlowUrl": {
+        "Init_AgentConfigs": {
             "type": "InitializeVariable",
             "runAfter": {},
+            "inputs": {
+                "variables": [{
+                    "name":  "agentConfigs",
+                    "type":  "array",
+                    "value": [
+                        {
+                            "agentId":   "REPLACE_WITH_AGENT_1_ID",
+                            "topicName": "Research Agent"
+                        }
+                    ]
+                }]
+            }
+        },
+        "Init_FormatFlowUrl": {
+            "type": "InitializeVariable",
+            "runAfter": {"Init_AgentConfigs": ["Succeeded"]},
             "inputs": {
                 "variables": [{
                     "name":  "formatFlowUrl",
@@ -1199,145 +1209,158 @@ flow5_workflow = {
             }
         },
 
-        # ── Step 1: Call the Copilot Research Agent ────────────────────────
-        "Call_Research_Agent": {
-            "type": "ApiConnection",
+        # ── Loop over every configured agent ──────────────────────────────
+        "Run_Each_Agent": {
+            "type": "Apply_to_each",
+            "foreach": "@variables('agentConfigs')",
             "runAfter": {"Init_EmailFlowUrl": ["Succeeded"]},
-            "inputs": {
-                "host": {
-                    "connection": {
-                        "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']"
+            "actions": {
+
+                # Step 1: Call agent — no inputs; agent owns topic + dist list
+                "Call_Research_Agent": {
+                    "type": "ApiConnection",
+                    "runAfter": {},
+                    "inputs": {
+                        "host": {
+                            "connection": {
+                                "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']"
+                            }
+                        },
+                        "method": "post",
+                        "path":   "/environments/@{parameters('environmentId')}/bots/@{items('Run_Each_Agent')?['agentId']}/topics/@{items('Run_Each_Agent')?['topicName']}/run",
+                        "body": {}
                     }
                 },
-                "method": "post",
-                "path":   "/environments/@{parameters('environmentId')}/bots/@{parameters('agentId')}/topics/@{parameters('topicName')}/run",
-                "body": {}
-            }
-        },
 
-        # ── Step 2: Parse agent response ──────────────────────────────────
-        "Parse_Agent_Response": {
-            "type": "ParseJson",
-            "runAfter": {"Call_Research_Agent": ["Succeeded"]},
-            "inputs": {
-                "content": "@body('Call_Research_Agent')",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "reportDate":       {"type": "string"},
-                        "windowStart":      {"type": "string"},
-                        "windowEnd":        {"type": "string"},
-                        "generatedAt":      {"type": "string"},
-                        "topic":            {"type": "string"},
-                        "executiveSummary": {"type": "string"},
-                        "categories":       {"type": "array"},
-                        "recommendations":  {"type": "array", "items": {"type": "string"}},
-                        "emailSubject":     {"type": "string"},
-                        "emailTo":          {"type": "array", "items": {"type": "string"}},
-                        "emailCc":          {"type": "array", "items": {"type": "string"}}
+                # Step 2: Parse agent response
+                "Parse_Agent_Response": {
+                    "type": "ParseJson",
+                    "runAfter": {"Call_Research_Agent": ["Succeeded"]},
+                    "inputs": {
+                        "content": "@body('Call_Research_Agent')",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "reportDate":       {"type": "string"},
+                                "windowStart":      {"type": "string"},
+                                "windowEnd":        {"type": "string"},
+                                "generatedAt":      {"type": "string"},
+                                "topic":            {"type": "string"},
+                                "executiveSummary": {"type": "string"},
+                                "categories":       {"type": "array"},
+                                "recommendations":  {"type": "array", "items": {"type": "string"}},
+                                "emailSubject":     {"type": "string"},
+                                "emailTo":          {"type": "array", "items": {"type": "string"}},
+                                "emailCc":          {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+
+                # Step 3: Format via shared HTML formatter
+                "Call_Format_Flow": {
+                    "type": "Http",
+                    "runAfter": {"Parse_Agent_Response": ["Succeeded"]},
+                    "inputs": {
+                        "method":  "POST",
+                        "uri":     "@variables('formatFlowUrl')",
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "reportDate":       "@body('Parse_Agent_Response')?['reportDate']",
+                            "windowStart":      "@body('Parse_Agent_Response')?['windowStart']",
+                            "windowEnd":        "@body('Parse_Agent_Response')?['windowEnd']",
+                            "generatedAt":      "@body('Parse_Agent_Response')?['generatedAt']",
+                            "topic":            "@body('Parse_Agent_Response')?['topic']",
+                            "executiveSummary": "@body('Parse_Agent_Response')?['executiveSummary']",
+                            "categories":       "@body('Parse_Agent_Response')?['categories']",
+                            "recommendations":  "@body('Parse_Agent_Response')?['recommendations']"
+                        }
+                    }
+                },
+
+                # Step 4: Parse format response
+                "Parse_Format_Response": {
+                    "type": "ParseJson",
+                    "runAfter": {"Call_Format_Flow": ["Succeeded"]},
+                    "inputs": {
+                        "content": "@body('Call_Format_Flow')",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "htmlBody":            {"type": "string"},
+                                "articleCount":        {"type": "integer"},
+                                "categoryCount":       {"type": "integer"},
+                                "recommendationCount": {"type": "integer"}
+                            }
+                        }
+                    }
+                },
+
+                # Step 5: Email — subject, To, CC all from agent output
+                "Call_Email_Flow": {
+                    "type": "Http",
+                    "runAfter": {"Parse_Format_Response": ["Succeeded"]},
+                    "inputs": {
+                        "method":  "POST",
+                        "uri":     "@variables('emailFlowUrl')",
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "htmlBody":   "@body('Parse_Format_Response')?['htmlBody']",
+                            "subject":    "@body('Parse_Agent_Response')?['emailSubject']",
+                            "to":         "@body('Parse_Agent_Response')?['emailTo']",
+                            "cc":         "@body('Parse_Agent_Response')?['emailCc']",
+                            "importance": "Normal"
+                        }
+                    }
+                },
+
+                # Step 6: Log per-agent run summary
+                "Log_Run_Summary": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Email_Flow": ["Succeeded"]},
+                    "inputs": {
+                        "runDate":         "@utcNow()",
+                        "agentId":         "@items('Run_Each_Agent')?['agentId']",
+                        "topic":           "@body('Parse_Agent_Response')?['topic']",
+                        "categories":      "@body('Parse_Format_Response')?['categoryCount']",
+                        "articles":        "@body('Parse_Format_Response')?['articleCount']",
+                        "recommendations": "@body('Parse_Format_Response')?['recommendationCount']",
+                        "emailStatus":     "@body('Call_Email_Flow')?['status']",
+                        "emailSentAt":     "@body('Call_Email_Flow')?['timestamp']"
+                    }
+                },
+
+                # Error handlers
+                "Handle_Agent_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Research_Agent": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "agent_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Research_Agent')?['error']",
+                        "timestamp": "@utcNow()"
+                    }
+                },
+                "Handle_Format_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Format_Flow": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "format_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Format_Flow')?['error']",
+                        "timestamp": "@utcNow()"
+                    }
+                },
+                "Handle_Email_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Email_Flow": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "email_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Email_Flow')?['error']",
+                        "timestamp": "@utcNow()"
                     }
                 }
-            }
-        },
-
-        # ── Step 3: Format research into HTML ─────────────────────────────
-        "Call_Format_Flow": {
-            "type": "Http",
-            "runAfter": {"Parse_Agent_Response": ["Succeeded"]},
-            "inputs": {
-                "method":  "POST",
-                "uri":     "@variables('formatFlowUrl')",
-                "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "reportDate":       "@body('Parse_Agent_Response')?['reportDate']",
-                    "windowStart":      "@body('Parse_Agent_Response')?['windowStart']",
-                    "windowEnd":        "@body('Parse_Agent_Response')?['windowEnd']",
-                    "generatedAt":      "@body('Parse_Agent_Response')?['generatedAt']",
-                    "topic":            "@body('Parse_Agent_Response')?['topic']",
-                    "executiveSummary": "@body('Parse_Agent_Response')?['executiveSummary']",
-                    "categories":       "@body('Parse_Agent_Response')?['categories']",
-                    "recommendations":  "@body('Parse_Agent_Response')?['recommendations']"
-                }
-            }
-        },
-
-        # ── Step 4: Parse format response ─────────────────────────────────
-        "Parse_Format_Response": {
-            "type": "ParseJson",
-            "runAfter": {"Call_Format_Flow": ["Succeeded"]},
-            "inputs": {
-                "content": "@body('Call_Format_Flow')",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "htmlBody":            {"type": "string"},
-                        "articleCount":        {"type": "integer"},
-                        "categoryCount":       {"type": "integer"},
-                        "recommendationCount": {"type": "integer"}
-                    }
-                }
-            }
-        },
-
-        # ── Step 5: Send email — subject/recipients from agent output ──────
-        "Call_Email_Flow": {
-            "type": "Http",
-            "runAfter": {"Parse_Format_Response": ["Succeeded"]},
-            "inputs": {
-                "method":  "POST",
-                "uri":     "@variables('emailFlowUrl')",
-                "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":   "@body('Parse_Format_Response')?['htmlBody']",
-                    "subject":    "@body('Parse_Agent_Response')?['emailSubject']",
-                    "to":         "@body('Parse_Agent_Response')?['emailTo']",
-                    "cc":         "@body('Parse_Agent_Response')?['emailCc']",
-                    "importance": "Normal"
-                }
-            }
-        },
-
-        # ── Step 6: Log run summary ────────────────────────────────────────
-        "Log_Run_Summary": {
-            "type": "Compose",
-            "runAfter": {"Call_Email_Flow": ["Succeeded"]},
-            "inputs": {
-                "runDate":         "@utcNow()",
-                "topic":           "@body('Parse_Agent_Response')?['topic']",
-                "categories":      "@body('Parse_Format_Response')?['categoryCount']",
-                "articles":        "@body('Parse_Format_Response')?['articleCount']",
-                "recommendations": "@body('Parse_Format_Response')?['recommendationCount']",
-                "emailStatus":     "@body('Call_Email_Flow')?['status']",
-                "emailSentAt":     "@body('Call_Email_Flow')?['timestamp']"
-            }
-        },
-
-        # ── Error handlers ─────────────────────────────────────────────────
-        "Handle_Agent_Failure": {
-            "type": "Compose",
-            "runAfter": {"Call_Research_Agent": ["Failed", "TimedOut"]},
-            "inputs": {
-                "status":    "agent_failed",
-                "error":     "@actions('Call_Research_Agent')?['error']",
-                "timestamp": "@utcNow()"
-            }
-        },
-        "Handle_Format_Failure": {
-            "type": "Compose",
-            "runAfter": {"Call_Format_Flow": ["Failed", "TimedOut"]},
-            "inputs": {
-                "status":    "format_failed",
-                "error":     "@actions('Call_Format_Flow')?['error']",
-                "timestamp": "@utcNow()"
-            }
-        },
-        "Handle_Email_Failure": {
-            "type": "Compose",
-            "runAfter": {"Call_Email_Flow": ["Failed", "TimedOut"]},
-            "inputs": {
-                "status":    "email_failed",
-                "error":     "@actions('Call_Email_Flow')?['error']",
-                "timestamp": "@utcNow()"
             }
         }
     },

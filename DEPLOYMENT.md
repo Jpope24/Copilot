@@ -420,6 +420,11 @@ placeholder in the HTML. Name them R1 through R9:
 
 > **Reference file:** `flows/Shared-ResearchAgentScheduler.json`
 
+This flow calls **every agent in its `agentConfigs` list** in sequence. Each
+agent owns its own topic and distribution list — the flow just orchestrates,
+formats, and delivers. To run multiple agents, you add entries to `agentConfigs`;
+no other flow changes are needed.
+
 1. **+ Create** → **Scheduled cloud flow**
 2. Name it `Shared-ResearchAgentScheduler`
 3. Set schedule: Starting **today**, Repeat every **1 Day**
@@ -427,31 +432,50 @@ placeholder in the HTML. Name them R1 through R9:
 
 **Add these actions in order:**
 
-**Action 1 — Initialize variable** → Name: `formatFlowUrl`, Type: String,
-Value: *(the HTTP trigger URL from Step O2-4)*
+**Action 1 — Initialize variable** → Name: `agentConfigs`, Type: **Array**
+Value (paste as raw JSON text):
+```json
+[
+  {
+    "agentId":   "REPLACE_WITH_AGENT_1_ID",
+    "topicName": "Research Agent"
+  }
+]
+```
+> To add a second agent later, append another `{ "agentId": "...", "topicName": "Research Agent" }` object to this array. No other changes needed.
 
-**Action 2 — Initialize variable** → Name: `emailFlowUrl`, Type: String,
-Value: *(the HTTP trigger URL from Step O2-3)*
+**Action 2 — Initialize variable** → Name: `formatFlowUrl`, Type: String,
+Value: *(the HTTP trigger URL from the Shared-FormatResearchReport flow)*
 
-**Action 3 — Run a copilot topic** (Microsoft Copilot Studio connector)
+**Action 3 — Initialize variable** → Name: `emailFlowUrl`, Type: String,
+Value: *(the HTTP trigger URL from the Shared-StablecoinEmailFlow flow)*
+
+**Action 4 — Apply to each**
+- **Rename** this step to: `Run_Each_Agent`
+- Select output (Expression tab): `variables('agentConfigs')`
+- Inside the loop, add all actions below. Each action is **nested inside** this Apply to each.
+
+**4a — Run a copilot topic** (Microsoft Copilot Studio connector)
 - Sign in with your work account when prompted
-- Bot: select your published Research Agent
-- Topic: select `Research Agent`
-- Input variables: *(leave empty — the agent owns its research topic)*
-  > The topic is configured as `Global.ResearchTopic` inside the agent in
-  > Copilot Studio. The flow sends no inputs; the agent returns the topic
-  > name (and everything else) as output variables.
+- Bot: *(dynamic — leave blank for now; set via the agentId expression)*
+- After adding the action, switch to **Advanced mode** (peek code / `</>`) and
+  set the path to:
+  ```
+  /environments/@{parameters('environmentId')}/bots/@{items('Run_Each_Agent')?['agentId']}/topics/@{items('Run_Each_Agent')?['topicName']}/run
+  ```
+- Body: *(leave empty — the agent owns its topic)*
 
-**Action 5 — Parse JSON**
-- Content: `@{body('Run_a_copilot_topic')}`
-- Schema: paste the schema from `flows/Shared-ResearchAgentScheduler.json`
-  under `Parse_Agent_Response.inputs.schema`
+**4b — Parse JSON** (parse agent response)
+- Content (expression): `body('Run_a_copilot_topic')`
+- Schema: paste the JSON schema from `flows/Shared-ResearchAgentScheduler.json`
+  → `Run_Each_Agent.actions.Parse_Agent_Response.inputs.schema`
 
-**Action 6 — HTTP** (call format flow)
+**4c — HTTP** (call format flow)
+- **Rename** to: `Call_Format_Flow`
 - Method: POST
-- URI: `@{variables('formatFlowUrl')}`
+- URI (expression): `variables('formatFlowUrl')`
 - Headers: `Content-Type: application/json`
-- Body:
+- Body (raw text mode):
   ```json
   {
     "reportDate":       "@{body('Parse_JSON')?['reportDate']}",
@@ -464,16 +488,18 @@ Value: *(the HTTP trigger URL from Step O2-3)*
     "recommendations":  "@{body('Parse_JSON')?['recommendations']}"
   }
   ```
+  > Replace `Parse_JSON` with whatever Power Automate named your Parse JSON step in 4b.
 
-**Action 7 — Parse JSON** (parse format response)
-- Content: `@{body('HTTP')}`
-- Schema: `{ "type":"object","properties":{ "htmlBody":{"type":"string"}, "articleCount":{"type":"integer"}, "categoryCount":{"type":"integer"}, "recommendationCount":{"type":"integer"} } }`
+**4d — Parse JSON** (parse format response)
+- Content (expression): `body('Call_Format_Flow')`
+- Schema: `{"type":"object","properties":{"htmlBody":{"type":"string"},"articleCount":{"type":"integer"},"categoryCount":{"type":"integer"},"recommendationCount":{"type":"integer"}}}`
 
-**Action 8 — HTTP** (call email flow)
+**4e — HTTP** (call email flow)
+- **Rename** to: `Call_Email_Flow`
 - Method: POST
-- URI: `@{variables('emailFlowUrl')}`
+- URI (expression): `variables('emailFlowUrl')`
 - Headers: `Content-Type: application/json`
-- Body:
+- Body (raw text mode):
   ```json
   {
     "htmlBody":   "@{body('Parse_JSON_2')?['htmlBody']}",
@@ -483,6 +509,8 @@ Value: *(the HTTP trigger URL from Step O2-3)*
     "importance": "Normal"
   }
   ```
+  > Replace `Parse_JSON_2` with the name Power Automate assigned to step 4d.
+  > Subject, To, and CC all come from the agent output — nothing is hardcoded here.
 
 5. **Edit the recurrence trigger** to run at 07:00 UTC:
    - Click the Recurrence trigger step
@@ -855,43 +883,40 @@ To create a new Copilot Studio connection:
 
 Go to **My flows** → `Shared-ResearchAgentScheduler` → **Edit**
 
-**5. Update the two configuration variables**
+**5. Update the three configuration variables**
 
-The first two actions in the flow are `Initialize Variable` steps.
-Click each one and update the **Value** field:
+The flow has three `Initialize Variable` steps. Click each one and update the **Value** field:
 
 | Action name | Field to change | What to enter |
 |---|---|---|
+| `Init_AgentConfigs` | Value | JSON array of agents (see below) |
 | `Init_FormatFlowUrl` | Value | The HTTP trigger URL copied from Part 3 Step 5 |
 | `Init_EmailFlowUrl` | Value | The HTTP trigger URL copied from Part 2 Step 5 |
 
-> **Research topic is set in the agent, not the flow.** To change what topic
-> is researched, update `Global.ResearchTopic` in Copilot Studio (see
-> [Changing the Research Topic](#changing-the-research-topic)).
+**Updating `Init_AgentConfigs`:**
+Click the step and replace the default Value with a JSON array listing every agent to run.
+Start with one agent:
+```json
+[
+  {
+    "agentId":   "YOUR-AGENT-GUID-HERE",
+    "topicName": "Research Agent"
+  }
+]
+```
+- `agentId`: the Copilot Studio agent GUID from Part 4 Step 9
+- `topicName`: the topic name you created in Copilot Studio (Step 8 of Part 4)
 
-**6. Update the flow parameters**
+To add more agents, append additional objects. Each sends its own email to
+its own distribution list (configured in that agent's instructions).
 
-Below the variable steps, click the **Call_Research_Agent** action. You
-will see it references `parameters('environmentId')`,
-`parameters('agentId')`, and `parameters('topicName')`.
+**6. Update the `environmentId` parameter**
 
-To set these parameters:
-- Click the **··· More** menu at the top of the flow editor → **Settings**
-  (or look for a **Parameters** panel in the flow)
-- Update the three parameter default values:
+Click the **··· More** menu → **Settings** (or find the **Parameters** panel).
+Set `environmentId` to your Power Platform environment GUID (from Part 4 Step 9).
 
-| Parameter | Value |
-|---|---|
-| `environmentId` | Your Power Platform environment GUID (from Part 4 Step 9) |
-| `agentId` | Your Copilot Studio agent GUID (from Part 4 Step 9) |
-| `topicName` | `Research & Return Report` (the topic name you created in Part 4 Step 6) |
-
-> **Alternative:** If Power Automate's import UI does not expose parameters
-> directly, click the **Call_Research_Agent** action and edit the **Path**
-> field directly:
-> ```
-> /environments/YOUR-ENV-ID/bots/YOUR-AGENT-ID/topics/Research & Return Report/run
-> ```
+> The flow no longer has `agentId` or `topicName` parameters — those are now
+> in the `agentConfigs` variable, which makes adding agents much easier.
 
 **7. Verify the recurrence schedule**
 
@@ -1002,58 +1027,82 @@ The next scheduled run (or your next manual test run) will research the new topi
 
 ## Changing Email Recipients
 
-Recipients are controlled by the **agent instructions**, not by the flows.
-This means you update them once in Copilot Studio — no flow edits needed.
+Recipients are defined in the **agent's instructions** — not in any flow.
+Each agent has its own Distribution List section. Changing it requires only
+updating the agent's Instructions field and republishing.
 
-1. Open `agent/research-agent-instructions.md` in a text editor
-2. Find the **Structured Output Schema** section
-3. Update the `emailTo` and `emailCc` arrays:
-   ```json
-   "emailTo": [
-     "alice@yourorg.com",
-     "bob@yourorg.com"
-   ],
-   "emailCc": [
-     "manager@yourorg.com"
-   ]
-   ```
+1. Open `agent/research-agent-instructions.md` in a text editor (or open your
+   customized copy)
+2. Find the **Distribution List** section under Deployment Configuration
+3. Update the `emailTo` and `emailCc` arrays with the new addresses
 4. Copy the entire updated file content
-5. In **Copilot Studio** → your Research Agent → **Instructions**
-6. Replace the existing instructions with the updated content
+5. In **Copilot Studio** → open your Research Agent → click **Instructions**
+6. Select all and paste the updated content
 7. Click **Save** then **Publish**
+
+No flow edits are required. The flow reads the distribution list from the
+agent's output on every run.
 
 ---
 
-## Running Multiple Topics
+## Running Multiple Agents (Multiple Topics)
 
-Each topic needs its own agent + scheduler flow pair. The format and email flows
-are shared — no additional deployments needed for those.
+One `Shared-ResearchAgentScheduler` instance can run **any number of agents**
+in sequence. Each agent sends its own formatted email to its own distribution
+list. The format flow and email flow are shared — no additional flow deployments
+are needed.
 
-**1. Create a new agent in Copilot Studio**
+### Creating a new agent for a different topic
 
-Duplicate your Research Agent (or create a new one from the same YAML) and set
-`Global.ResearchTopic` to the new topic in its Variables panel. Publish it.
+1. **Copy the instructions template**
+   - Start from `agent/research-agent-instructions.md`
+   - Update the three Deployment Configuration sections:
+     - **Topic** — new topic name (must match `Global.ResearchTopic`)
+     - **Research Focus** — specific categories, source priorities, and
+       research guidance for this topic
+     - **Distribution List** — the `emailTo` / `emailCc` addresses for this topic's audience
 
-**2. Duplicate the scheduler flow**
+2. **Create the agent in Copilot Studio**
+   - Follow Part 4 of this guide using your customized instructions
+   - Set `Global.ResearchTopic` to the new topic name
+   - Use the same `agent/research-agent-topic.yaml` (it is generic)
+   - Record the new agent's **Agent ID**
 
-- **My flows** → `Shared-ResearchAgentScheduler` → **··· More** → **Save as**
-- Name it something descriptive, e.g. `ResearchScheduler-Cybersecurity`
-- In the duplicate, update **Call_Research_Agent** to point to the new agent
-  (update the `agentId` parameter)
+3. **Add the agent to the scheduler flow**
+   - Open `Shared-ResearchAgentScheduler` in Edit mode
+   - Click the **Init_AgentConfigs** step
+   - Add an entry to the array:
+     ```json
+     [
+       {
+         "agentId":   "EXISTING-AGENT-1-ID",
+         "topicName": "Research Agent"
+       },
+       {
+         "agentId":   "NEW-AGENT-2-ID",
+         "topicName": "Research Agent"
+       }
+     ]
+     ```
+   - Click **Save**
 
-**3. Stagger the schedules (optional)**
+The next scheduled run calls both agents in sequence and sends two separate
+emails — one per agent, each formatted identically, each going to its own
+distribution list. Recipients see only their agent's report; there is no
+combined email.
 
-To avoid all reports arriving at the same time, offset each scheduler by
-15–30 minutes:
-- `ResearchScheduler-AI`: 07:00 UTC
-- `ResearchScheduler-Cybersecurity`: 07:15 UTC
-- `ResearchScheduler-Finance`: 07:30 UTC
+### Example multi-agent configuration
 
-**4. Update agent instructions for each topic's recipients (optional)**
+```json
+[
+  { "agentId": "cr123_aiResearch",        "topicName": "Research Agent" },
+  { "agentId": "cr456_cyberResearch",     "topicName": "Research Agent" },
+  { "agentId": "cr789_financeResearch",   "topicName": "Research Agent" }
+]
+```
 
-If different topics need different distribution lists, create separate agent
-instances in Copilot Studio with different `emailTo`/`emailCc` in their
-instructions, and point each scheduler to the appropriate agent.
+Each agent in this list must be published in Copilot Studio and have its
+own customized Instructions (topic, research focus, distribution list).
 
 ---
 

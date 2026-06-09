@@ -40,19 +40,25 @@ beginDialog:
         ${topic.windowEnd} UTC. Gathering sources…
 
     # ── Step 3: Research via Bing-grounded Generative Answers ─────────────────
+    # The userInput provides the core research task. The agent's Instructions
+    # field (configured in Copilot Studio) supplies the detailed category
+    # definitions, source priorities, and distribution list for this topic.
     - kind: SearchAndSummarizeContent
       variable: topic.rawResearch
       userInput: >
-        Research the topic "${topic.researchTopic}" for the last 24 hours.
-        Find the most important news articles, announcements, publications,
-        and developments. For each item found:
+        Research the topic "${topic.researchTopic}" for the last 24 hours,
+        following the Research Focus section in your instructions — use the
+        exact category names and source priorities defined there.
+        For each item found:
         - Provide the full article title
-        - Write a 2–3 sentence factual summary citing specific data points
-        - Include the direct URL to the source article
+        - Write a 2–3 sentence factual summary citing specific data points,
+          dates, and named parties
+        - Include the direct URL to the original source article
         - Record the publication name and publish timestamp (UTC)
-        Group findings into 3–6 meaningful categories appropriate to this topic.
-        Also provide a 2–4 sentence executive summary of the overall findings
-        and 3–7 specific, actionable recommendations based on the research.
+        Provide a 2–4 sentence executive summary of the most significant
+        findings and 3–7 specific, actionable recommendations. Use the
+        emailTo and emailCc addresses from the Distribution List in your
+        instructions.
 
     # ── Step 4: Structure the research into the required JSON payload ──────────
     # The generative AI organizes raw research into the structured schema,
