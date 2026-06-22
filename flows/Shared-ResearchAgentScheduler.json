@@ -2,11 +2,11 @@
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "_meta": {
     "flowName": "Shared-ResearchAgentScheduler",
-    "description": "Scheduled orchestrating flow. Runs daily at 07:00 UTC and calls every agent listed in the agentConfigs variable in sequence. For each agent: invokes it via the Copilot Studio connector (no inputs — each agent owns its topic and distribution list), receives the full research payload, passes it to Shared-FormatResearchReport for HTML rendering, then sends the formatted report via Shared-StablecoinEmailFlow to the distribution list returned by that agent. One flow run delivers one email per configured agent.",
+    "description": "Scheduled orchestrating flow. Runs daily at 07:00 UTC and calls every agent listed in the agentConfigs variable in sequence. For each agent: invokes it via the Copilot Studio connector (no inputs -- each agent owns its topic and distribution list), receives the full research payload, passes it to Shared-FormatResearchReport for HTML rendering, then sends the formatted report via Shared-StablecoinEmailFlow to the distribution list returned by that agent. One flow run delivers one email per configured agent.",
     "version": "2.0.0",
     "connectors": [
       "Microsoft Copilot Studio (shared_CopilotStudio)",
-      "Office 365 Outlook — via Shared-StablecoinEmailFlow"
+      "Office 365 Outlook -- via Shared-StablecoinEmailFlow"
     ]
   },
 
@@ -28,7 +28,7 @@
     "Initialize_AgentConfigs": {
       "type": "InitializeVariable",
       "runAfter": {},
-      "description": "List of agents to run each day. Each object needs agentId (Copilot Studio agent GUID) and topicName (the topic name as configured in the agent). Add more objects to run additional agents — each gets its own formatted email sent to the distribution list defined in that agent's instructions.",
+      "description": "List of agents to run each day. Each object needs agentId (Copilot Studio agent GUID) and topicName. Add more objects to run additional agents.",
       "inputs": {
         "variables": [{
           "name":  "agentConfigs",
@@ -79,7 +79,7 @@
         "Call_Research_Agent": {
           "type": "ApiConnection",
           "runAfter": {},
-          "description": "Invoke this agent's configured topic in Copilot Studio. The agent reads its own Global.ResearchTopic variable and returns all data — including the topic name, distribution list, and email subject.",
+          "description": "Invoke this agent's topic in Copilot Studio. The agent reads its own Global.ResearchTopic variable and returns all data including topic name, distribution list, and email subject.",
           "inputs": {
             "host": {
               "connection": {
@@ -151,7 +151,7 @@
         "Call_Format_Flow": {
           "type": "Http",
           "runAfter": { "Parse_Agent_Response": ["Succeeded"] },
-          "description": "Send this agent's research payload to Shared-FormatResearchReport and receive the rendered HTML. The same format flow is reused for every agent — consistent output regardless of topic.",
+          "description": "Send this agent's research payload to Shared-FormatResearchReport. The same format flow is reused for every agent -- consistent output regardless of topic.",
           "inputs": {
             "method":  "POST",
             "uri":     "@variables('formatFlowUrl')",
@@ -189,7 +189,7 @@
         "Call_Email_Flow": {
           "type": "Http",
           "runAfter": { "Parse_Format_Response": ["Succeeded"] },
-          "description": "Send the formatted report via Shared-StablecoinEmailFlow. Subject, To, and CC all come from this agent's output — the flow has no hardcoded recipients.",
+          "description": "Send the formatted report. Subject, To, and CC all come from this agent's output -- nothing is hardcoded in the flow.",
           "inputs": {
             "method":  "POST",
             "uri":     "@variables('emailFlowUrl')",

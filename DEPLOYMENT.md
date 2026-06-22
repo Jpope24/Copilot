@@ -978,7 +978,7 @@ The run detail shows every action with a green checkmark (success) or red X
 
 Within a few minutes of a successful run, the configured recipients should
 receive an email with:
-- Subject matching the pattern `{Topic} — Research Brief | {Date}`
+- Subject matching the pattern `{Topic} - Research Brief | {Date}`
 - A purple-branded HTML body containing the executive summary,
   categorized article cards with clickable links, and a recommendations list
 
