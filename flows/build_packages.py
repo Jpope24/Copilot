@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Build Power Automate import packages (.zip) for the Stablecoin and Stapleton Research Agent flows.
+Build Power Automate import packages (.zip) for all Research Agent flows.
 
 Output:
   flows/packages/Shared-FormatStablecoinReport.zip
   flows/packages/Shared-StablecoinEmailFlow.zip
   flows/packages/Shared-FormatStapletonReport.zip
+  flows/packages/Shared-FormatResearchReport.zip
+  flows/packages/Shared-ResearchAgentScheduler.zip
 
 Each zip follows the Power Automate export package structure:
   manifest.json
@@ -21,6 +23,7 @@ REPO_ROOT          = os.path.dirname(SCRIPT_DIR)
 PACKAGES           = os.path.join(SCRIPT_DIR, "packages")
 TEMPLATE           = os.path.join(REPO_ROOT, "templates", "stablecoin-report.html")
 STAPLETON_TEMPLATE = os.path.join(REPO_ROOT, "templates", "stapleton-report.html")
+RESEARCH_TEMPLATE  = os.path.join(REPO_ROOT, "templates", "research-report.html")
 
 os.makedirs(PACKAGES, exist_ok=True)
 
@@ -29,6 +32,9 @@ with open(TEMPLATE, "r", encoding="utf-8") as fh:
 
 with open(STAPLETON_TEMPLATE, "r", encoding="utf-8") as fh:
     STAPLETON_HTML = fh.read()
+
+with open(RESEARCH_TEMPLATE, "r", encoding="utf-8") as fh:
+    RESEARCH_HTML = fh.read()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,18 +335,23 @@ flow1_workflow = {
             "inputs": "@replace(outputs('Replace_NewsItems'), '{{MACRO_CONTEXT}}', triggerBody()?['macroContext'])"
         },
 
-        # ── Return rendered HTML ───────────────────────────────────────────
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"Replace_MacroContext": ["Succeeded"]},
+            "inputs": {
+                "htmlBody":  "@outputs('Replace_MacroContext')",
+                "coinCount": "@length(triggerBody()?['coins'])",
+                "newsCount": "@length(triggerBody()?['newsItems'])"
+            }
+        },
         "Respond": {
             "type": "Response",
-            "runAfter": {"Replace_MacroContext": ["Succeeded"]},
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":  "@outputs('Replace_MacroContext')",
-                    "coinCount": "@length(triggerBody()?['coins'])",
-                    "newsCount": "@length(triggerBody()?['newsItems'])"
-                }
+                "body": "@outputs('Build_Response_Body')"
             }
         }
     },
@@ -475,31 +486,41 @@ flow2_workflow = {
             }
         },
 
-        # ── Respond with send status ───────────────────────────────────────
-        "Respond_Success": {
-            "type": "Response",
+        # ── Build response bodies (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Success_Body": {
+            "type": "Compose",
             "runAfter": {"Send_Email": ["Succeeded"]},
             "inputs": {
+                "status":    "sent",
+                "to":        "@outputs('To_String')",
+                "cc":        "@outputs('Cc_String')",
+                "subject":   "@triggerBody()?['subject']",
+                "timestamp": "@utcNow()"
+            }
+        },
+        "Respond_Success": {
+            "type": "Response",
+            "runAfter": {"Build_Success_Body": ["Succeeded"]},
+            "inputs": {
                 "statusCode": 200,
-                "body": {
-                    "status":    "sent",
-                    "to":        "@outputs('To_String')",
-                    "cc":        "@outputs('Cc_String')",
-                    "subject":   "@triggerBody()?['subject']",
-                    "timestamp": "@utcNow()"
-                }
+                "body": "@outputs('Build_Success_Body')"
+            }
+        },
+        "Build_Failure_Body": {
+            "type": "Compose",
+            "runAfter": {"Send_Email": ["Failed", "TimedOut"]},
+            "inputs": {
+                "status":    "failed",
+                "error":     "@actions('Send_Email')?['error']",
+                "timestamp": "@utcNow()"
             }
         },
         "Respond_Failure": {
             "type": "Response",
-            "runAfter": {"Send_Email": ["Failed", "TimedOut"]},
+            "runAfter": {"Build_Failure_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 500,
-                "body": {
-                    "status":    "failed",
-                    "error":     "@actions('Send_Email')?['error']",
-                    "timestamp": "@utcNow()"
-                }
+                "body": "@outputs('Build_Failure_Body')"
             }
         }
     },
@@ -793,18 +814,23 @@ flow3_workflow = {
         "R17": {"type": "Compose", "runAfter": {"R16": ["Succeeded"]},
                 "inputs": "@replace(outputs('R16'), '{{EVENT_ITEMS}}', outputs('Events_Or_Placeholder'))"},
 
-        # ── Return rendered HTML ───────────────────────────────────────────
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"R17": ["Succeeded"]},
+            "inputs": {
+                "htmlBody":   "@outputs('R17')",
+                "devCount":   "@length(triggerBody()?['developments'])",
+                "eventCount": "@length(triggerBody()?['events'])"
+            }
+        },
         "Respond": {
             "type": "Response",
-            "runAfter": {"R17": ["Succeeded"]},
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
             "inputs": {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": {
-                    "htmlBody":   "@outputs('R17')",
-                    "devCount":   "@length(triggerBody()?['developments'])",
-                    "eventCount": "@length(triggerBody()?['events'])"
-                }
+                "body": "@outputs('Build_Response_Body')"
             }
         }
     },
@@ -828,3 +854,548 @@ write_zip(
 )
 
 print("Done — all 3 packages ready in flows/packages/")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FLOW 4 — Shared-FormatResearchReport
+# ═════════════════════════════════════════════════════════════════════════════
+FLOW4_GUID    = "d4e5f6a7-b8c9-0123-defa-123456789014"
+FLOW4_DISPLAY = "Shared-FormatResearchReport"
+FLOW4_DESC    = (
+    "Accepts structured research JSON from any Copilot agent — categories with "
+    "articles (summaries and links) and a recommendations list — and returns a "
+    "fully rendered HTML email body. Reusable by any agent or orchestrating flow."
+)
+
+flow4_workflow = {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/"
+               "schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "$connections":    {"defaultValue": {}, "type": "Object"},
+        "$authentication": {"defaultValue": {}, "type": "SecureObject"}
+    },
+    "triggers": {
+        "manual": {
+            "type": "Request",
+            "kind": "Http",
+            "inputs": {
+                "schema": {
+                    "type": "object",
+                    "required": [
+                        "reportDate", "windowStart", "windowEnd",
+                        "topic", "executiveSummary", "categories", "recommendations"
+                    ],
+                    "properties": {
+                        "reportDate":       {"type": "string"},
+                        "windowStart":      {"type": "string"},
+                        "windowEnd":        {"type": "string"},
+                        "generatedAt":      {"type": "string"},
+                        "topic":            {"type": "string"},
+                        "executiveSummary": {"type": "string"},
+                        "categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name":        {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "articles": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "title":       {"type": "string"},
+                                                "summary":     {"type": "string"},
+                                                "url":         {"type": "string"},
+                                                "source":      {"type": "string"},
+                                                "publishedAt": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "recommendations": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "actions": {
+        # ── Variables ──────────────────────────────────────────────────────
+        "Init_CategoryItemsHtml": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "categoryItemsHtml", "type": "string", "value": ""}]
+            },
+            "runAfter": {}
+        },
+        "Init_CurrentArticlesHtml": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "currentArticlesHtml", "type": "string", "value": ""}]
+            },
+            "runAfter": {"Init_CategoryItemsHtml": ["Succeeded"]}
+        },
+        "Init_RecItemsHtml": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "recItemsHtml", "type": "string", "value": ""}]
+            },
+            "runAfter": {"Init_CurrentArticlesHtml": ["Succeeded"]}
+        },
+        "Init_ArticleCount": {
+            "type": "InitializeVariable",
+            "inputs": {
+                "variables": [{"name": "articleCount", "type": "integer", "value": 0}]
+            },
+            "runAfter": {"Init_RecItemsHtml": ["Succeeded"]}
+        },
+
+        # ── Embed HTML template ────────────────────────────────────────────
+        "HTML_Template": {
+            "type": "Compose",
+            "inputs": RESEARCH_HTML,
+            "runAfter": {"Init_ArticleCount": ["Succeeded"]}
+        },
+
+        # ── Outer loop: categories ─────────────────────────────────────────
+        "Build_Categories": {
+            "type": "Foreach",
+            "foreach": "@triggerBody()?['categories']",
+            "runAfter": {"HTML_Template": ["Succeeded"]},
+            "actions": {
+                # Reset per-category article accumulator
+                "Reset_CurrentArticlesHtml": {
+                    "type": "SetVariable",
+                    "runAfter": {},
+                    "inputs": {"name": "currentArticlesHtml", "value": ""}
+                },
+                # Inner loop: articles within this category
+                "Build_Articles": {
+                    "type": "Foreach",
+                    "foreach": "@items('Build_Categories')?['articles']",
+                    "runAfter": {"Reset_CurrentArticlesHtml": ["Succeeded"]},
+                    "actions": {
+                        "Build_Article_Html": {
+                            "type": "Compose",
+                            "runAfter": {},
+                            "inputs": (
+                                "@concat("
+                                "'<div class=\"article-item\">',"
+                                "'<a class=\"article-title\" href=\"', items('Build_Articles')?['url'], '\">',"
+                                "items('Build_Articles')?['title'], '</a>',"
+                                "'<p class=\"article-meta\">',"
+                                "items('Build_Articles')?['source'],"
+                                "' &nbsp;&middot;&nbsp; ',"
+                                "items('Build_Articles')?['publishedAt'],"
+                                "'</p>',"
+                                "'<p class=\"article-summary\">',"
+                                "items('Build_Articles')?['summary'],"
+                                "'</p></div>')"
+                            )
+                        },
+                        "Append_Article_Html": {
+                            "type": "AppendToStringVariable",
+                            "runAfter": {"Build_Article_Html": ["Succeeded"]},
+                            "inputs": {
+                                "name":  "currentArticlesHtml",
+                                "value": "@outputs('Build_Article_Html')"
+                            }
+                        },
+                        "Increment_Article_Count": {
+                            "type": "IncrementVariable",
+                            "runAfter": {"Append_Article_Html": ["Succeeded"]},
+                            "inputs": {"name": "articleCount", "value": 1}
+                        }
+                    }
+                },
+                # Build full category block: heading + optional description + articles
+                "Build_Category_Html": {
+                    "type": "Compose",
+                    "runAfter": {"Build_Articles": ["Succeeded"]},
+                    "inputs": (
+                        "@concat("
+                        "'<div class=\"category-section\">',"
+                        "'<div class=\"category-heading\">', items('Build_Categories')?['name'], '</div>',"
+                        "if(empty(coalesce(items('Build_Categories')?['description'], '')),"
+                        "   '',"
+                        "   concat('<p class=\"category-desc\">', items('Build_Categories')?['description'], '</p>')),"
+                        "variables('currentArticlesHtml'),"
+                        "'</div>')"
+                    )
+                },
+                "Append_Category_Html": {
+                    "type": "AppendToStringVariable",
+                    "runAfter": {"Build_Category_Html": ["Succeeded"]},
+                    "inputs": {
+                        "name":  "categoryItemsHtml",
+                        "value": "@outputs('Build_Category_Html')"
+                    }
+                }
+            }
+        },
+
+        # ── Recommendation list items ──────────────────────────────────────
+        "Build_Recommendations": {
+            "type": "Foreach",
+            "foreach": "@triggerBody()?['recommendations']",
+            "runAfter": {"Build_Categories": ["Succeeded"]},
+            "actions": {
+                "Build_Rec_Html": {
+                    "type": "Compose",
+                    "runAfter": {},
+                    "inputs": (
+                        "@concat('<li class=\"rec-item\">',"
+                        "'<span class=\"rec-arrow\">&#8594;</span>',"
+                        "items('Build_Recommendations'),"
+                        "'</li>')"
+                    )
+                },
+                "Append_Rec_Html": {
+                    "type": "AppendToStringVariable",
+                    "runAfter": {"Build_Rec_Html": ["Succeeded"]},
+                    "inputs": {
+                        "name":  "recItemsHtml",
+                        "value": "@outputs('Build_Rec_Html')"
+                    }
+                }
+            }
+        },
+
+        # ── Inject all values into template (chained replace calls) ────────
+        "R1": {
+            "type": "Compose",
+            "runAfter": {"Build_Recommendations": ["Succeeded"]},
+            "inputs": "@replace(string(outputs('HTML_Template')), '{{REPORT_DATE}}', triggerBody()?['reportDate'])"
+        },
+        "R2": {"type": "Compose", "runAfter": {"R1": ["Succeeded"]},
+               "inputs": "@replace(outputs('R1'), '{{WINDOW_START}}', triggerBody()?['windowStart'])"},
+        "R3": {"type": "Compose", "runAfter": {"R2": ["Succeeded"]},
+               "inputs": "@replace(outputs('R2'), '{{WINDOW_END}}', triggerBody()?['windowEnd'])"},
+        "R4": {"type": "Compose", "runAfter": {"R3": ["Succeeded"]},
+               "inputs": "@replace(outputs('R3'), '{{GENERATED_AT}}', coalesce(triggerBody()?['generatedAt'], utcNow()))"},
+        "R5": {"type": "Compose", "runAfter": {"R4": ["Succeeded"]},
+               "inputs": "@replace(outputs('R4'), '{{TOPIC_NAME}}', triggerBody()?['topic'])"},
+        "R6": {"type": "Compose", "runAfter": {"R5": ["Succeeded"]},
+               "inputs": "@replace(outputs('R5'), '{{ARTICLE_COUNT}}', string(variables('articleCount')))"},
+        "R7": {"type": "Compose", "runAfter": {"R6": ["Succeeded"]},
+               "inputs": "@replace(outputs('R6'), '{{EXECUTIVE_SUMMARY}}', triggerBody()?['executiveSummary'])"},
+        "R8": {"type": "Compose", "runAfter": {"R7": ["Succeeded"]},
+               "inputs": "@replace(outputs('R7'), '{{CATEGORY_ITEMS}}', variables('categoryItemsHtml'))"},
+        "R9": {"type": "Compose", "runAfter": {"R8": ["Succeeded"]},
+               "inputs": "@replace(outputs('R8'), '{{RECOMMENDATION_ITEMS}}', variables('recItemsHtml'))"},
+
+        # ── Build response body (Compose avoids ActionSchemaInvalid on Response) ──
+        "Build_Response_Body": {
+            "type": "Compose",
+            "runAfter": {"R9": ["Succeeded"]},
+            "inputs": {
+                "htmlBody":            "@outputs('R9')",
+                "articleCount":        "@variables('articleCount')",
+                "categoryCount":       "@length(triggerBody()?['categories'])",
+                "recommendationCount": "@length(triggerBody()?['recommendations'])"
+            }
+        },
+        "Respond": {
+            "type": "Response",
+            "runAfter": {"Build_Response_Body": ["Succeeded"]},
+            "inputs": {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": "@outputs('Build_Response_Body')"
+            }
+        }
+    },
+    "outputs": {}
+}
+
+flow4_def_envelope = definition_envelope(
+    FLOW4_GUID, FLOW4_DISPLAY, FLOW4_DESC, flow4_workflow
+)
+flow4_manifest = manifest(
+    FLOW4_DISPLAY, FLOW4_DESC, FLOW4_GUID,
+    resource_key="formatresearchreport",
+    workflow_def=flow4_workflow,
+    connection_refs={},
+    telemetry_guid="f6a7b8c9-d0e1-2345-fabc-345678901234"
+)
+
+write_zip(
+    os.path.join(PACKAGES, "Shared-FormatResearchReport.zip"),
+    FLOW4_GUID, flow4_manifest, flow4_def_envelope
+)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FLOW 5 — Shared-ResearchAgentScheduler
+# ═════════════════════════════════════════════════════════════════════════════
+FLOW5_GUID    = "e5f6a7b8-c9d0-1234-abcd-456789012345"
+FLOW5_DISPLAY = "Shared-ResearchAgentScheduler"
+FLOW5_DESC    = (
+    "Scheduled daily flow. Iterates over every agent in the agentConfigs "
+    "variable. For each agent: calls it via the Copilot Studio connector, "
+    "formats the returned research payload via Shared-FormatResearchReport, "
+    "and sends the HTML report via Shared-StablecoinEmailFlow to the "
+    "distribution list returned by that agent. One flow run delivers one "
+    "email per configured agent."
+)
+
+flow5_workflow = {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/"
+               "schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "$connections":    {"defaultValue": {}, "type": "Object"},
+        "$authentication": {"defaultValue": {}, "type": "SecureObject"},
+        "environmentId": {
+            "defaultValue": "REPLACE_WITH_YOUR_POWER_PLATFORM_ENVIRONMENT_ID",
+            "type": "String"
+        }
+    },
+    "triggers": {
+        "Recurrence": {
+            "type": "Recurrence",
+            "recurrence": {
+                "frequency": "Day",
+                "interval":  1,
+                "schedule":  {"hours": ["7"], "minutes": ["0"]},
+                "timeZone":  "UTC"
+            }
+        }
+    },
+    "actions": {
+        # ── Configuration variables ────────────────────────────────────────
+        "Init_AgentConfigs": {
+            "type": "InitializeVariable",
+            "runAfter": {},
+            "inputs": {
+                "variables": [{
+                    "name":  "agentConfigs",
+                    "type":  "array",
+                    "value": [
+                        {
+                            "agentId":   "REPLACE_WITH_AGENT_1_ID",
+                            "topicName": "Research Agent"
+                        }
+                    ]
+                }]
+            }
+        },
+        "Init_FormatFlowUrl": {
+            "type": "InitializeVariable",
+            "runAfter": {"Init_AgentConfigs": ["Succeeded"]},
+            "inputs": {
+                "variables": [{
+                    "name":  "formatFlowUrl",
+                    "type":  "string",
+                    "value": "https://prod-00.eastus.logic.azure.com/workflows/REPLACE_WITH_FORMAT_FLOW_URL"
+                }]
+            }
+        },
+        "Init_EmailFlowUrl": {
+            "type": "InitializeVariable",
+            "runAfter": {"Init_FormatFlowUrl": ["Succeeded"]},
+            "inputs": {
+                "variables": [{
+                    "name":  "emailFlowUrl",
+                    "type":  "string",
+                    "value": "https://prod-00.eastus.logic.azure.com/workflows/REPLACE_WITH_EMAIL_FLOW_URL"
+                }]
+            }
+        },
+
+        # ── Loop over every configured agent ──────────────────────────────
+        "Run_Each_Agent": {
+            "type": "Apply_to_each",
+            "foreach": "@variables('agentConfigs')",
+            "runAfter": {"Init_EmailFlowUrl": ["Succeeded"]},
+            "actions": {
+
+                # Step 1: Call agent — no inputs; agent owns topic + dist list
+                "Call_Research_Agent": {
+                    "type": "ApiConnection",
+                    "runAfter": {},
+                    "inputs": {
+                        "host": {
+                            "connection": {
+                                "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']"
+                            }
+                        },
+                        "method": "post",
+                        "path":   "/environments/@{parameters('environmentId')}/bots/@{items('Run_Each_Agent')?['agentId']}/topics/@{items('Run_Each_Agent')?['topicName']}/run",
+                        "body": {}
+                    }
+                },
+
+                # Step 2: Parse agent response
+                "Parse_Agent_Response": {
+                    "type": "ParseJson",
+                    "runAfter": {"Call_Research_Agent": ["Succeeded"]},
+                    "inputs": {
+                        "content": "@body('Call_Research_Agent')",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "reportDate":       {"type": "string"},
+                                "windowStart":      {"type": "string"},
+                                "windowEnd":        {"type": "string"},
+                                "generatedAt":      {"type": "string"},
+                                "topic":            {"type": "string"},
+                                "executiveSummary": {"type": "string"},
+                                "categories":       {"type": "array"},
+                                "recommendations":  {"type": "array", "items": {"type": "string"}},
+                                "emailSubject":     {"type": "string"},
+                                "emailTo":          {"type": "array", "items": {"type": "string"}},
+                                "emailCc":          {"type": "array", "items": {"type": "string"}}
+                            }
+                        }
+                    }
+                },
+
+                # Step 3: Format via shared HTML formatter
+                "Call_Format_Flow": {
+                    "type": "Http",
+                    "runAfter": {"Parse_Agent_Response": ["Succeeded"]},
+                    "inputs": {
+                        "method":  "POST",
+                        "uri":     "@variables('formatFlowUrl')",
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "reportDate":       "@body('Parse_Agent_Response')?['reportDate']",
+                            "windowStart":      "@body('Parse_Agent_Response')?['windowStart']",
+                            "windowEnd":        "@body('Parse_Agent_Response')?['windowEnd']",
+                            "generatedAt":      "@body('Parse_Agent_Response')?['generatedAt']",
+                            "topic":            "@body('Parse_Agent_Response')?['topic']",
+                            "executiveSummary": "@body('Parse_Agent_Response')?['executiveSummary']",
+                            "categories":       "@body('Parse_Agent_Response')?['categories']",
+                            "recommendations":  "@body('Parse_Agent_Response')?['recommendations']"
+                        }
+                    }
+                },
+
+                # Step 4: Parse format response
+                "Parse_Format_Response": {
+                    "type": "ParseJson",
+                    "runAfter": {"Call_Format_Flow": ["Succeeded"]},
+                    "inputs": {
+                        "content": "@body('Call_Format_Flow')",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "htmlBody":            {"type": "string"},
+                                "articleCount":        {"type": "integer"},
+                                "categoryCount":       {"type": "integer"},
+                                "recommendationCount": {"type": "integer"}
+                            }
+                        }
+                    }
+                },
+
+                # Step 5: Email — subject, To, CC all from agent output
+                "Call_Email_Flow": {
+                    "type": "Http",
+                    "runAfter": {"Parse_Format_Response": ["Succeeded"]},
+                    "inputs": {
+                        "method":  "POST",
+                        "uri":     "@variables('emailFlowUrl')",
+                        "headers": {"Content-Type": "application/json"},
+                        "body": {
+                            "htmlBody":   "@body('Parse_Format_Response')?['htmlBody']",
+                            "subject":    "@body('Parse_Agent_Response')?['emailSubject']",
+                            "to":         "@body('Parse_Agent_Response')?['emailTo']",
+                            "cc":         "@body('Parse_Agent_Response')?['emailCc']",
+                            "importance": "Normal"
+                        }
+                    }
+                },
+
+                # Step 6: Log per-agent run summary
+                "Log_Run_Summary": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Email_Flow": ["Succeeded"]},
+                    "inputs": {
+                        "runDate":         "@utcNow()",
+                        "agentId":         "@items('Run_Each_Agent')?['agentId']",
+                        "topic":           "@body('Parse_Agent_Response')?['topic']",
+                        "categories":      "@body('Parse_Format_Response')?['categoryCount']",
+                        "articles":        "@body('Parse_Format_Response')?['articleCount']",
+                        "recommendations": "@body('Parse_Format_Response')?['recommendationCount']",
+                        "emailStatus":     "@body('Call_Email_Flow')?['status']",
+                        "emailSentAt":     "@body('Call_Email_Flow')?['timestamp']"
+                    }
+                },
+
+                # Error handlers
+                "Handle_Agent_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Research_Agent": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "agent_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Research_Agent')?['error']",
+                        "timestamp": "@utcNow()"
+                    }
+                },
+                "Handle_Format_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Format_Flow": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "format_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Format_Flow')?['error']",
+                        "timestamp": "@utcNow()"
+                    }
+                },
+                "Handle_Email_Failure": {
+                    "type": "Compose",
+                    "runAfter": {"Call_Email_Flow": ["Failed", "TimedOut"]},
+                    "inputs": {
+                        "status":    "email_failed",
+                        "agentId":   "@items('Run_Each_Agent')?['agentId']",
+                        "error":     "@actions('Call_Email_Flow')?['error']",
+                        "timestamp": "@utcNow()"
+                    }
+                }
+            }
+        }
+    },
+    "outputs": {}
+}
+
+flow5_connection_refs = {
+    "shared_CopilotStudio": {
+        "runtimeSource": "embedded",
+        "connection": {},
+        "api": {"name": "shared_CopilotStudio"}
+    }
+}
+
+flow5_def_envelope = definition_envelope(
+    FLOW5_GUID, FLOW5_DISPLAY, FLOW5_DESC,
+    flow5_workflow, flow5_connection_refs
+)
+flow5_manifest = manifest(
+    FLOW5_DISPLAY, FLOW5_DESC, FLOW5_GUID,
+    resource_key="researchagentscheduler",
+    workflow_def=flow5_workflow,
+    connection_refs={
+        "shared_CopilotStudio": {
+            "source":       "Embedded",
+            "id":           "/providers/Microsoft.PowerApps/apis/shared_CopilotStudio",
+            "creationType": "Existing"
+        }
+    },
+    telemetry_guid="a7b8c9d0-e1f2-3456-abcd-567890123456"
+)
+
+write_zip(
+    os.path.join(PACKAGES, "Shared-ResearchAgentScheduler.zip"),
+    FLOW5_GUID, flow5_manifest, flow5_def_envelope
+)
+
+print("Done — all 5 packages ready in flows/packages/")

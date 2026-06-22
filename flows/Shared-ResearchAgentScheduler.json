@@ -1,0 +1,290 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "_meta": {
+    "flowName": "Shared-ResearchAgentScheduler",
+    "description": "Scheduled orchestrating flow. Runs daily at 07:00 UTC and calls every agent listed in the agentConfigs variable in sequence. For each agent: invokes it via the Copilot Studio connector (no inputs -- each agent owns its topic and distribution list), receives the full research payload, passes it to Shared-FormatResearchReport for HTML rendering, then sends the formatted report via Shared-StablecoinEmailFlow to the distribution list returned by that agent. One flow run delivers one email per configured agent.",
+    "version": "2.0.0",
+    "connectors": [
+      "Microsoft Copilot Studio (shared_CopilotStudio)",
+      "Office 365 Outlook -- via Shared-StablecoinEmailFlow"
+    ]
+  },
+
+  "trigger": {
+    "type": "Recurrence",
+    "recurrence": {
+      "frequency": "Day",
+      "interval": 1,
+      "schedule": {
+        "hours":   ["7"],
+        "minutes": ["0"]
+      },
+      "timeZone": "UTC"
+    }
+  },
+
+  "actions": {
+
+    "Initialize_AgentConfigs": {
+      "type": "InitializeVariable",
+      "runAfter": {},
+      "description": "List of agents to run each day. Each object needs agentId (Copilot Studio agent GUID) and topicName. Add more objects to run additional agents.",
+      "inputs": {
+        "variables": [{
+          "name":  "agentConfigs",
+          "type":  "array",
+          "value": [
+            {
+              "agentId":   "REPLACE_WITH_AGENT_1_ID",
+              "topicName": "Research Agent"
+            }
+          ]
+        }]
+      }
+    },
+
+    "Initialize_FormatFlowUrl": {
+      "type": "InitializeVariable",
+      "runAfter": { "Initialize_AgentConfigs": ["Succeeded"] },
+      "description": "Paste the HTTP POST URL of your deployed Shared-FormatResearchReport flow here.",
+      "inputs": {
+        "variables": [{
+          "name":  "formatFlowUrl",
+          "type":  "string",
+          "value": "https://prod-00.eastus.logic.azure.com/workflows/REPLACE_WITH_FORMAT_FLOW_URL"
+        }]
+      }
+    },
+
+    "Initialize_EmailFlowUrl": {
+      "type": "InitializeVariable",
+      "runAfter": { "Initialize_FormatFlowUrl": ["Succeeded"] },
+      "description": "Paste the HTTP POST URL of your deployed Shared-StablecoinEmailFlow here.",
+      "inputs": {
+        "variables": [{
+          "name":  "emailFlowUrl",
+          "type":  "string",
+          "value": "https://prod-00.eastus.logic.azure.com/workflows/REPLACE_WITH_EMAIL_FLOW_URL"
+        }]
+      }
+    },
+
+    "Run_Each_Agent": {
+      "type": "Apply_to_each",
+      "foreach": "@variables('agentConfigs')",
+      "runAfter": { "Initialize_EmailFlowUrl": ["Succeeded"] },
+      "description": "Iterate over every configured agent. Each iteration calls the agent, formats its output as HTML, and sends a separate email to that agent's distribution list.",
+      "actions": {
+
+        "Call_Research_Agent": {
+          "type": "ApiConnection",
+          "runAfter": {},
+          "description": "Invoke this agent's topic in Copilot Studio. The agent reads its own Global.ResearchTopic variable and returns all data including topic name, distribution list, and email subject.",
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path":   "/environments/@{parameters('environmentId')}/bots/@{items('Run_Each_Agent')?['agentId']}/topics/@{items('Run_Each_Agent')?['topicName']}/run",
+            "body": {}
+          }
+        },
+
+        "Parse_Agent_Response": {
+          "type": "ParseJson",
+          "runAfter": { "Call_Research_Agent": ["Succeeded"] },
+          "description": "Parse the structured research payload returned by the agent.",
+          "inputs": {
+            "content": "@body('Call_Research_Agent')",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "reportDate":       { "type": "string" },
+                "windowStart":      { "type": "string" },
+                "windowEnd":        { "type": "string" },
+                "generatedAt":      { "type": "string" },
+                "topic":            { "type": "string" },
+                "executiveSummary": { "type": "string" },
+                "categories": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name":        { "type": "string" },
+                      "description": { "type": "string" },
+                      "articles": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "title":       { "type": "string" },
+                            "summary":     { "type": "string" },
+                            "url":         { "type": "string" },
+                            "source":      { "type": "string" },
+                            "publishedAt": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "recommendations": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "emailSubject": { "type": "string" },
+                "emailTo": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "emailCc": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+
+        "Call_Format_Flow": {
+          "type": "Http",
+          "runAfter": { "Parse_Agent_Response": ["Succeeded"] },
+          "description": "Send this agent's research payload to Shared-FormatResearchReport. The same format flow is reused for every agent -- consistent output regardless of topic.",
+          "inputs": {
+            "method":  "POST",
+            "uri":     "@variables('formatFlowUrl')",
+            "headers": { "Content-Type": "application/json" },
+            "body": {
+              "reportDate":       "@body('Parse_Agent_Response')?['reportDate']",
+              "windowStart":      "@body('Parse_Agent_Response')?['windowStart']",
+              "windowEnd":        "@body('Parse_Agent_Response')?['windowEnd']",
+              "generatedAt":      "@body('Parse_Agent_Response')?['generatedAt']",
+              "topic":            "@body('Parse_Agent_Response')?['topic']",
+              "executiveSummary": "@body('Parse_Agent_Response')?['executiveSummary']",
+              "categories":       "@body('Parse_Agent_Response')?['categories']",
+              "recommendations":  "@body('Parse_Agent_Response')?['recommendations']"
+            }
+          }
+        },
+
+        "Parse_Format_Response": {
+          "type": "ParseJson",
+          "runAfter": { "Call_Format_Flow": ["Succeeded"] },
+          "inputs": {
+            "content": "@body('Call_Format_Flow')",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "htmlBody":            { "type": "string" },
+                "articleCount":        { "type": "integer" },
+                "categoryCount":       { "type": "integer" },
+                "recommendationCount": { "type": "integer" }
+              }
+            }
+          }
+        },
+
+        "Call_Email_Flow": {
+          "type": "Http",
+          "runAfter": { "Parse_Format_Response": ["Succeeded"] },
+          "description": "Send the formatted report. Subject, To, and CC all come from this agent's output -- nothing is hardcoded in the flow.",
+          "inputs": {
+            "method":  "POST",
+            "uri":     "@variables('emailFlowUrl')",
+            "headers": { "Content-Type": "application/json" },
+            "body": {
+              "htmlBody":   "@body('Parse_Format_Response')?['htmlBody']",
+              "subject":    "@body('Parse_Agent_Response')?['emailSubject']",
+              "to":         "@body('Parse_Agent_Response')?['emailTo']",
+              "cc":         "@body('Parse_Agent_Response')?['emailCc']",
+              "importance": "Normal"
+            }
+          }
+        },
+
+        "Parse_Email_Response": {
+          "type": "ParseJson",
+          "runAfter": { "Call_Email_Flow": ["Succeeded"] },
+          "inputs": {
+            "content": "@body('Call_Email_Flow')",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "status":    { "type": "string" },
+                "to":        { "type": "string" },
+                "cc":        { "type": "string" },
+                "subject":   { "type": "string" },
+                "timestamp": { "type": "string" }
+              }
+            }
+          }
+        },
+
+        "Log_Run_Summary": {
+          "type": "Compose",
+          "runAfter": { "Parse_Email_Response": ["Succeeded"] },
+          "description": "Captures per-agent run metadata for Power Automate run history.",
+          "inputs": {
+            "runDate":             "@utcNow()",
+            "agentId":             "@items('Run_Each_Agent')?['agentId']",
+            "topic":               "@body('Parse_Agent_Response')?['topic']",
+            "categories":          "@body('Parse_Format_Response')?['categoryCount']",
+            "articles":            "@body('Parse_Format_Response')?['articleCount']",
+            "recommendations":     "@body('Parse_Format_Response')?['recommendationCount']",
+            "emailStatus":         "@body('Parse_Email_Response')?['status']",
+            "emailSubject":        "@body('Parse_Email_Response')?['subject']",
+            "emailSentAt":         "@body('Parse_Email_Response')?['timestamp']",
+            "emailTo":             "@body('Parse_Email_Response')?['to']"
+          }
+        },
+
+        "Handle_Agent_Failure": {
+          "type": "Compose",
+          "runAfter": { "Call_Research_Agent": ["Failed", "TimedOut"] },
+          "inputs": {
+            "status":    "agent_failed",
+            "agentId":   "@items('Run_Each_Agent')?['agentId']",
+            "error":     "@actions('Call_Research_Agent')?['error']",
+            "timestamp": "@utcNow()"
+          }
+        },
+
+        "Handle_Format_Failure": {
+          "type": "Compose",
+          "runAfter": { "Call_Format_Flow": ["Failed", "TimedOut"] },
+          "inputs": {
+            "status":    "format_failed",
+            "agentId":   "@items('Run_Each_Agent')?['agentId']",
+            "error":     "@actions('Call_Format_Flow')?['error']",
+            "timestamp": "@utcNow()"
+          }
+        },
+
+        "Handle_Email_Failure": {
+          "type": "Compose",
+          "runAfter": { "Call_Email_Flow": ["Failed", "TimedOut"] },
+          "inputs": {
+            "status":    "email_failed",
+            "agentId":   "@items('Run_Each_Agent')?['agentId']",
+            "error":     "@actions('Call_Email_Flow')?['error']",
+            "timestamp": "@utcNow()"
+          }
+        }
+
+      }
+    }
+  },
+
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "environmentId": {
+      "defaultValue": "REPLACE_WITH_YOUR_POWER_PLATFORM_ENVIRONMENT_ID",
+      "type": "String"
+    }
+  }
+}
