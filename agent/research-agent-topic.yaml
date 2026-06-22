@@ -4,41 +4,51 @@ modelDescription: Researches a topic configured as a global variable inside the 
 actions:
 
   - kind: SetVariable
+    id: setWindowEnd
     variable: topic.windowEnd
     value: =utcNow()
 
   - kind: SetVariable
+    id: setWindowStart
     variable: topic.windowStart
     value: =addHours(utcNow(), -24)
 
   - kind: SetVariable
+    id: setReportDate
     variable: topic.reportDate
     value: =text(utcNow(), "MMMM D, YYYY")
 
   - kind: SetVariable
+    id: setGeneratedAt
     variable: topic.generatedAt
     value: =utcNow()
 
   - kind: SetVariable
+    id: setResearchTopic
     variable: topic.researchTopic
     value: =Global.ResearchTopic
 
   - kind: SendActivity
+    id: sendGatheringMsg
     activity: Researching "${topic.researchTopic}" for the past 24 hours. Gathering sources...
 
   - kind: SearchAndSummarizeContent
+    id: doResearch
     variable: topic.rawResearch
     userInput: Research the topic "${topic.researchTopic}" for the last 24 hours, following the Research Focus section in your instructions - use the exact category names and source priorities defined there. For each item found provide the full article title, a 2-3 sentence factual summary citing specific data points dates and named parties, the direct URL to the original source article, and the publication name and publish timestamp in UTC. Provide a 2-4 sentence executive summary of the most significant findings and 3-7 specific actionable recommendations. Use the emailTo and emailCc addresses from the Distribution List in your instructions.
 
   - kind: SetVariable
+    id: setStructuredPayload
     variable: topic.structuredPayload
     value: =topic.rawResearch
 
   - kind: SetVariable
+    id: setEmailSubject
     variable: topic.emailSubject
     value: ="${topic.researchTopic} - Research Brief | ${topic.reportDate}"
 
   - kind: EndTask
+    id: endTask
     outputs:
       reportDate: =topic.reportDate
       windowStart: =topic.windowStart
