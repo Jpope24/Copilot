@@ -1,54 +1,56 @@
 kind: AdaptiveDialog
 modelDescription: Researches a topic configured as a global variable inside the agent, categorizes findings with article summaries and source links, produces recommendations, and returns all structured data to the calling Power Automate flow.
 
-beginDialog:
-  actions:
+triggers:
+  - kind: OnBeginDialog
+    id: main
+    actions:
 
-    - kind: SetVariable
-      variable: topic.windowEnd
-      value: =utcNow()
+      - kind: SetVariable
+        variable: topic.windowEnd
+        value: =utcNow()
 
-    - kind: SetVariable
-      variable: topic.windowStart
-      value: =addHours(utcNow(), -24)
+      - kind: SetVariable
+        variable: topic.windowStart
+        value: =addHours(utcNow(), -24)
 
-    - kind: SetVariable
-      variable: topic.reportDate
-      value: =text(utcNow(), "MMMM D, YYYY")
+      - kind: SetVariable
+        variable: topic.reportDate
+        value: =text(utcNow(), "MMMM D, YYYY")
 
-    - kind: SetVariable
-      variable: topic.generatedAt
-      value: =utcNow()
+      - kind: SetVariable
+        variable: topic.generatedAt
+        value: =utcNow()
 
-    - kind: SetVariable
-      variable: topic.researchTopic
-      value: =Global.ResearchTopic
+      - kind: SetVariable
+        variable: topic.researchTopic
+        value: =Global.ResearchTopic
 
-    - kind: SendActivity
-      activity: Researching "${topic.researchTopic}" for the past 24 hours. Gathering sources...
+      - kind: SendActivity
+        activity: Researching "${topic.researchTopic}" for the past 24 hours. Gathering sources...
 
-    - kind: SearchAndSummarizeContent
-      variable: topic.rawResearch
-      userInput: Research the topic "${topic.researchTopic}" for the last 24 hours, following the Research Focus section in your instructions - use the exact category names and source priorities defined there. For each item found provide the full article title, a 2-3 sentence factual summary citing specific data points dates and named parties, the direct URL to the original source article, and the publication name and publish timestamp in UTC. Provide a 2-4 sentence executive summary of the most significant findings and 3-7 specific actionable recommendations. Use the emailTo and emailCc addresses from the Distribution List in your instructions.
+      - kind: SearchAndSummarizeContent
+        variable: topic.rawResearch
+        userInput: Research the topic "${topic.researchTopic}" for the last 24 hours, following the Research Focus section in your instructions - use the exact category names and source priorities defined there. For each item found provide the full article title, a 2-3 sentence factual summary citing specific data points dates and named parties, the direct URL to the original source article, and the publication name and publish timestamp in UTC. Provide a 2-4 sentence executive summary of the most significant findings and 3-7 specific actionable recommendations. Use the emailTo and emailCc addresses from the Distribution List in your instructions.
 
-    - kind: SetVariable
-      variable: topic.structuredPayload
-      value: =topic.rawResearch
+      - kind: SetVariable
+        variable: topic.structuredPayload
+        value: =topic.rawResearch
 
-    - kind: SetVariable
-      variable: topic.emailSubject
-      value: ="${topic.researchTopic} - Research Brief | ${topic.reportDate}"
+      - kind: SetVariable
+        variable: topic.emailSubject
+        value: ="${topic.researchTopic} - Research Brief | ${topic.reportDate}"
 
-    - kind: EndTask
-      outputs:
-        reportDate: =topic.reportDate
-        windowStart: =topic.windowStart
-        windowEnd: =topic.windowEnd
-        generatedAt: =topic.generatedAt
-        topic: =topic.researchTopic
-        executiveSummary: =topic.structuredPayload.executiveSummary
-        categories: =topic.structuredPayload.categories
-        recommendations: =topic.structuredPayload.recommendations
-        emailSubject: =topic.emailSubject
-        emailTo: =topic.structuredPayload.emailTo
-        emailCc: =topic.structuredPayload.emailCc
+      - kind: EndTask
+        outputs:
+          reportDate: =topic.reportDate
+          windowStart: =topic.windowStart
+          windowEnd: =topic.windowEnd
+          generatedAt: =topic.generatedAt
+          topic: =topic.researchTopic
+          executiveSummary: =topic.structuredPayload.executiveSummary
+          categories: =topic.structuredPayload.categories
+          recommendations: =topic.structuredPayload.recommendations
+          emailSubject: =topic.emailSubject
+          emailTo: =topic.structuredPayload.emailTo
+          emailCc: =topic.structuredPayload.emailCc
