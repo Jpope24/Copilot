@@ -1,16 +1,16 @@
 kind: AdaptiveDialog
 modelDescription: >
-  Researches a topic configured as a global variable inside the agent, categorizes
-  findings with article summaries and source links, produces recommendations, and
-  returns all structured data — including the topic name, email subject, and
-  distribution list — to the calling Power Automate flow. The flow handles HTML
-  formatting and email delivery. The topic is owned by the agent; no input is
-  required from the calling flow.
+  Researches a topic configured as a global variable inside the agent,
+  categorizes findings with article summaries and source links, produces
+  recommendations, and returns all structured data - including the topic name,
+  email subject, and distribution list - to the calling Power Automate flow.
+  The flow handles HTML formatting and email delivery. The topic is owned by
+  the agent; no input is required from the calling flow.
 
 beginDialog:
   actions:
 
-    # ── Step 1: Set time window ────────────────────────────────────────────────
+    # Step 1: Set time window
     - kind: SetVariable
       variable: topic.windowEnd
       value: =utcNow()
@@ -27,9 +27,9 @@ beginDialog:
       variable: topic.generatedAt
       value: =utcNow()
 
-    # ── Step 2: Read the research topic from the agent's global variable ───────
-    # Configure Global.ResearchTopic in the Copilot Studio Variables panel
-    # (set the default value there). The calling flow passes no input variables.
+    # Step 2: Read the research topic from the agent's global variable.
+    # Set the default value of Global.ResearchTopic in the Copilot Studio
+    # Variables panel. The calling flow passes no input variables.
     - kind: SetVariable
       variable: topic.researchTopic
       value: =Global.ResearchTopic
@@ -37,45 +37,43 @@ beginDialog:
     - kind: SendActivity
       activity: >
         Researching "${topic.researchTopic}" for the 24-hour window ending
-        ${topic.windowEnd} UTC. Gathering sources…
+        ${topic.windowEnd} UTC. Gathering sources...
 
-    # ── Step 3: Research via Bing-grounded Generative Answers ─────────────────
-    # The userInput provides the core research task. The agent's Instructions
-    # field (configured in Copilot Studio) supplies the detailed category
-    # definitions, source priorities, and distribution list for this topic.
+    # Step 3: Research via Bing-grounded Generative Answers.
+    # The userInput below provides the core task. The agent Instructions field
+    # in Copilot Studio supplies the detailed category definitions, source
+    # priorities, and distribution list for this specific topic.
     - kind: SearchAndSummarizeContent
       variable: topic.rawResearch
       userInput: >
         Research the topic "${topic.researchTopic}" for the last 24 hours,
-        following the Research Focus section in your instructions — use the
+        following the Research Focus section in your instructions - use the
         exact category names and source priorities defined there.
         For each item found:
         - Provide the full article title
-        - Write a 2–3 sentence factual summary citing specific data points,
+        - Write a 2-3 sentence factual summary citing specific data points,
           dates, and named parties
         - Include the direct URL to the original source article
         - Record the publication name and publish timestamp (UTC)
-        Provide a 2–4 sentence executive summary of the most significant
-        findings and 3–7 specific, actionable recommendations. Use the
+        Provide a 2-4 sentence executive summary of the most significant
+        findings and 3-7 specific, actionable recommendations. Use the
         emailTo and emailCc addresses from the Distribution List in your
         instructions.
 
-    # ── Step 4: Structure the research into the required JSON payload ──────────
-    # The generative AI organizes raw research into the structured schema,
-    # adding categories, article details, recommendations, and email config.
+    # Step 4: Carry the raw research forward as the structured payload.
     - kind: SetVariable
       variable: topic.structuredPayload
       value: =topic.rawResearch
 
-    # ── Step 5: Build email metadata ──────────────────────────────────────────
+    # Step 5: Build the email subject line.
     - kind: SetVariable
       variable: topic.emailSubject
-      value: ="${topic.researchTopic} — Research Brief | ${topic.reportDate}"
+      value: ="${topic.researchTopic} - Research Brief | ${topic.reportDate}"
 
-    # ── Step 6: Return all output variables to the calling Power Automate flow ─
-    # The Shared-ResearchAgentScheduler flow receives these and handles
-    # HTML formatting (via Shared-FormatResearchReport) and email delivery
-    # (via Shared-StablecoinEmailFlow).
+    # Step 6: Return all output variables to the calling Power Automate flow.
+    # Shared-ResearchAgentScheduler receives these and handles HTML formatting
+    # via Shared-FormatResearchReport and email delivery via
+    # Shared-StablecoinEmailFlow.
     - kind: EndTask
       outputs:
         reportDate:       =topic.reportDate
@@ -90,11 +88,11 @@ beginDialog:
         emailTo:          =topic.structuredPayload.emailTo
         emailCc:          =topic.structuredPayload.emailCc
 
-# ── Output variable declarations (used by Power Automate connector) ──────────
+# Output variable declarations (used by Power Automate connector)
 outputs:
   - name: reportDate
     type: String
-    description: Human-readable date (e.g. "June 5, 2026")
+    description: Human-readable date (e.g. "June 9, 2026")
   - name: windowStart
     type: String
     description: ISO 8601 research window start timestamp
@@ -109,7 +107,7 @@ outputs:
     description: The topic that was researched
   - name: executiveSummary
     type: String
-    description: 2–4 sentence overall summary of findings
+    description: 2-4 sentence overall summary of findings
   - name: categories
     type: Array
     description: >
