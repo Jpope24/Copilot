@@ -2,19 +2,40 @@
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "_meta": {
     "flowName": "Shared-AppraisalPdfToExcel",
-    "description": "Called by the 'Appraisal Review Extractor' Copilot Studio agent. Accepts an appraisal review PDF (as a file input, not an HTTP upload — see trigger notes), extracts 17 credit-risk data points via an AI Builder prompt, appends one row to the shared Appraisal Review Tracker workbook, and returns a link plus a summary to the agent.",
-    "version": "1.0.0",
+    "description": "Called by the 'Appraisal Review Extractor' Copilot Studio agent. Accepts an appraisal review PDF (as a file input, not an HTTP upload — see trigger notes), extracts 17 credit-risk data points via an AI Builder prompt, copies the bank's own appraisal review template to a new, uniquely named workbook, writes the extracted values into that workbook's named cells (sheet 'RE Collateral'), and returns a link to the new file plus a summary to the agent.",
+    "version": "2.0.0",
     "invokedBy": "Appraisal Review Extractor (Copilot Studio agent), via InvokeFlowAction — not called over HTTP by other flows/agents",
     "connectors": [
       "AI Builder (shared_aibuilder) — Predict with a custom Prompt (see Deployment Configuration below)",
-      "Excel Online (Business) (shared_excelonlinebusiness) — Add a row into a table",
-      "SharePoint (shared_sharepointonline) — used once at setup time to provision the tracker file; not called per run"
+      "SharePoint (shared_sharepointonline) — Copy file, Get file properties, Create sharing link — run on every request, this template creates a new file per review",
+      "Excel Online (Business) (shared_excelonlinebusiness) — Run script, to populate the named cells listed in _meta.cellMap"
     ],
+    "cellMap": {
+      "sheet": "RE Collateral",
+      "F23": "occupancyType",
+      "F24": "cityState (city + \", \" + state)",
+      "F25": "streetAddress",
+      "F26": "collateralAnalysisValue",
+      "F27": "valuationType",
+      "F29": "appraiserNames",
+      "F30": "appraisalDate",
+      "F31": "reviewerName",
+      "F32": "reviewDate",
+      "I21": "grossBuildingAreaSqFt",
+      "I22": "netRentableAreaSqFt",
+      "I23": "numberOfBuildings",
+      "I24": "yearBuiltOrRemodeled",
+      "I25": "remainingEconomicLifeYears",
+      "I26": "generalCondition",
+      "I27": "marketExposureTime",
+      "I28": "meetsHighestAndBestUse"
+    },
     "costNotes": [
       "No Azure OpenAI, Azure AI Document Intelligence, or Azure Function is provisioned for this tool — extraction runs entirely on the AI Builder prompt included with the team's Power Platform/Copilot Studio capacity, so the only new consumption is AI Builder credits per PDF processed.",
-      "The tracker's SharePoint sharing link is computed once at deployment time and passed in as a parameter (trackerFileUrl) rather than requested from SharePoint on every run — saves one API call per extraction and avoids link-churn.",
-      "One shared, ever-growing tracker workbook is used instead of copying the template per request, so there is no per-run file-copy cost and no runaway document sprawl in SharePoint.",
-      "The agent enforces a 15 MB / 40-page cap before calling this flow (see agent/appraisal-agent-instructions.md), so this flow never spends AI Builder credits on an oversized or clearly-invalid upload."
+      "Cell population uses the standard Excel Online (Business) 'Run script' (Office Scripts) action, not a Premium connector or a custom Azure Function — Office Scripts are included in standard Microsoft 365 licensing.",
+      "The flow's own trigger is Copilot Studio's native child-flow trigger, not a Premium HTTP Request trigger.",
+      "The agent enforces a 15 MB / 40-page cap before calling this flow (see agent/appraisal-agent-instructions.md), so this flow never spends AI Builder credits — or creates a new file — for an oversized or clearly-invalid upload.",
+      "This version intentionally creates one new file per review (per the bank's existing review-package convention) rather than appending to a shared workbook — the template copy and the one-time sharing-link creation are the per-run costs this design accepts in exchange for matching the team's existing template/workflow."
     ]
   },
 
@@ -41,8 +62,9 @@
       "description": "Configured on the trigger's Outputs panel in the designer (see DEPLOYMENT.md) — each output is bound to an expression pointing at the corresponding Compose action below.",
       "status": "@outputs('Build_Response_Body')?['status']",
       "errorMessage": "@outputs('Build_Response_Body')?['errorMessage']",
-      "trackerFileUrl": "@outputs('Build_Response_Body')?['trackerFileUrl']",
-      "rowSummary": "@outputs('Build_Response_Body')?['rowSummary']",
+      "reviewFileUrl": "@outputs('Build_Response_Body')?['reviewFileUrl']",
+      "reviewFileName": "@outputs('Build_Response_Body')?['reviewFileName']",
+      "reviewSummary": "@outputs('Build_Response_Body')?['reviewSummary']",
       "missingFields": "@outputs('Build_Response_Body')?['missingFields']",
       "needsManualReview": "@outputs('Build_Response_Body')?['needsManualReview']",
       "extractionNotes": "@outputs('Build_Response_Body')?['extractionNotes']"
@@ -113,66 +135,128 @@
       "inputs": "@join(coalesce(body('Parse_Extraction_Result')?['appraiserNames'], createArray('Not Stated')), '; ')"
     },
 
-    "Format_Missing_Fields": {
+    "Format_City_State": {
       "type": "Compose",
+      "description": "Feeds cell F24, which holds city and state together.",
       "runAfter": { "Format_Appraiser_Names": ["Succeeded"] },
-      "inputs": "@if(empty(body('Parse_Extraction_Result')?['missingFields']), 'None', join(body('Parse_Extraction_Result')?['missingFields'], ', '))"
+      "inputs": "@concat(coalesce(body('Parse_Extraction_Result')?['city'], 'Not Stated'), ', ', coalesce(body('Parse_Extraction_Result')?['state'], 'Not Stated'))"
     },
 
-    "Add_Row_To_Tracker": {
+    "Build_Destination_File_Name": {
+      "type": "Compose",
+      "description": "One new file per review: '<street address, sanitized> - <city state> - <yyyyMMdd-HHmmss>.xlsx'. The timestamp suffix guarantees uniqueness even for two reviews on the same property the same day.",
+      "runAfter": { "Format_City_State": ["Succeeded"] },
+      "inputs": "@concat('Appraisal Review - ', replace(replace(replace(replace(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address Not Stated'), '/', '-'), '\\', '-'), ':', '-'), '?', ''), ' - ', formatDateTime(utcNow(), 'yyyyMMdd-HHmmss'), '.xlsx')"
+    },
+
+    "Copy_Template_To_New_File": {
       "type": "ApiConnection",
-      "description": "Appends one row to the AppraisalReviewData table in the single shared tracker workbook (parameters.trackerSiteUrl / parameters.trackerFileId — provisioned once from templates/Appraisal-Review-Tracker-Template.xlsx, see DEPLOYMENT.md). No new file is created per run.",
-      "runAfter": { "Format_Missing_Fields": ["Succeeded"] },
+      "description": "Copies the template designated in parameters.templateSiteUrl / parameters.templateFilePath to parameters.destinationSiteUrl / parameters.destinationFolderPath, under the name built above. 'If another file already exists' is set to Rename as a safety net, since the timestamp suffix already makes a collision very unlikely.",
+      "runAfter": { "Build_Destination_File_Name": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/copyfile",
+        "body": {
+          "sourceSiteUrl":      "@parameters('templateSiteUrl')",
+          "sourceFilePath":     "@parameters('templateFilePath')",
+          "destinationSiteUrl": "@parameters('destinationSiteUrl')",
+          "destinationFolder":  "@parameters('destinationFolderPath')",
+          "destinationFileName": "@outputs('Build_Destination_File_Name')",
+          "ifFileAlreadyExists": "rename"
+        }
+      }
+    },
+
+    "Get_New_File_Properties": {
+      "type": "ApiConnection",
+      "description": "Resolves the drive/item identifiers of the newly copied file from the path Copy_Template_To_New_File returns — the Run Script and Create Sharing Link actions need these identifiers, not just a path.",
+      "runAfter": { "Copy_Template_To_New_File": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
+        },
+        "method": "get",
+        "path": "/getfilebypath",
+        "queries": {
+          "siteUrl": "@parameters('destinationSiteUrl')",
+          "filePath": "@body('Copy_Template_To_New_File')?['destinationFilePath']"
+        }
+      }
+    },
+
+    "Populate_Review_Cells": {
+      "type": "ApiConnection",
+      "description": "Runs flows/scripts/PopulateAppraisalReviewCells.ts against the new file (added once to the file/library via Excel Online > Automate, see DEPLOYMENT.md). All parameters are passed as strings — see the script for why — with missing values coalesced to the literal 'Not Stated'.",
+      "runAfter": { "Get_New_File_Properties": ["Succeeded"] },
       "inputs": {
         "host": {
           "connection": { "name": "@parameters('$connections')['shared_excelonlinebusiness']['connectionId']" }
         },
         "method": "post",
-        "path": "/drives/@{encodeURIComponent(parameters('trackerDriveId'))}/items/@{encodeURIComponent(parameters('trackerFileId'))}/tables/@{encodeURIComponent('AppraisalReviewData')}/rows",
+        "path": "/drives/@{encodeURIComponent(body('Get_New_File_Properties')?['driveId'])}/files/@{encodeURIComponent(body('Get_New_File_Properties')?['itemId'])}/runscript",
         "body": {
-          "Date Added":                    "@outputs('Init_ExtractionTimestamp')",
-          "Requested By":                  "@triggerBody()?['requestedByName']",
-          "Requestor Email":               "@triggerBody()?['requestedByEmail']",
-          "Source File Name":              "@triggerBody()?['fileName']",
-          "Street Address":                "@coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Not Stated')",
-          "City":                          "@coalesce(body('Parse_Extraction_Result')?['city'], 'Not Stated')",
-          "State":                         "@coalesce(body('Parse_Extraction_Result')?['state'], 'Not Stated')",
-          "Primary Occupancy Type":        "@coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'Not Stated')",
-          "Collateral Analysis Value":     "@body('Parse_Extraction_Result')?['collateralAnalysisValue']",
-          "Valuation Type":                "@coalesce(body('Parse_Extraction_Result')?['valuationType'], 'Not Stated')",
-          "Appraiser Name(s)":             "@outputs('Format_Appraiser_Names')",
-          "Date of Appraisal":             "@body('Parse_Extraction_Result')?['appraisalDate']",
-          "Appraisal Reviewer":            "@coalesce(body('Parse_Extraction_Result')?['reviewerName'], 'Not Stated')",
-          "Date of Review":                "@body('Parse_Extraction_Result')?['reviewDate']",
-          "Gross Building Area (SF)":      "@body('Parse_Extraction_Result')?['grossBuildingAreaSqFt']",
-          "Net Rentable Area (SF)":        "@body('Parse_Extraction_Result')?['netRentableAreaSqFt']",
-          "Number of Buildings":           "@body('Parse_Extraction_Result')?['numberOfBuildings']",
-          "Year Built/Remodeled":          "@body('Parse_Extraction_Result')?['yearBuiltOrRemodeled']",
-          "Remaining Economic Life (Yrs)": "@body('Parse_Extraction_Result')?['remainingEconomicLifeYears']",
-          "General Condition":             "@coalesce(body('Parse_Extraction_Result')?['generalCondition'], 'Not Stated')",
-          "Market Exposure Time":          "@coalesce(body('Parse_Extraction_Result')?['marketExposureTime'], 'Not Stated')",
-          "Meets Highest & Best Use":      "@coalesce(body('Parse_Extraction_Result')?['meetsHighestAndBestUse'], 'Not Stated')",
-          "Missing Fields":                "@outputs('Format_Missing_Fields')",
-          "Needs Manual Review":           "@body('Parse_Extraction_Result')?['needsManualReview']",
-          "Extraction Notes":              "@coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')"
+          "scriptName": "PopulateAppraisalReviewCells",
+          "scriptParameters": {
+            "occupancyType":              "@coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'Not Stated')",
+            "cityState":                  "@outputs('Format_City_State')",
+            "streetAddress":              "@coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Not Stated')",
+            "collateralAnalysisValue":    "@string(coalesce(body('Parse_Extraction_Result')?['collateralAnalysisValue'], 'Not Stated'))",
+            "valuationType":              "@coalesce(body('Parse_Extraction_Result')?['valuationType'], 'Not Stated')",
+            "appraiserNames":             "@outputs('Format_Appraiser_Names')",
+            "appraisalDate":              "@coalesce(body('Parse_Extraction_Result')?['appraisalDate'], 'Not Stated')",
+            "reviewerName":               "@coalesce(body('Parse_Extraction_Result')?['reviewerName'], 'Not Stated')",
+            "reviewDate":                 "@coalesce(body('Parse_Extraction_Result')?['reviewDate'], 'Not Stated')",
+            "grossBuildingAreaSqFt":      "@string(coalesce(body('Parse_Extraction_Result')?['grossBuildingAreaSqFt'], 'Not Stated'))",
+            "netRentableAreaSqFt":        "@string(coalesce(body('Parse_Extraction_Result')?['netRentableAreaSqFt'], 'Not Stated'))",
+            "numberOfBuildings":          "@string(coalesce(body('Parse_Extraction_Result')?['numberOfBuildings'], 'Not Stated'))",
+            "yearBuiltOrRemodeled":       "@string(coalesce(body('Parse_Extraction_Result')?['yearBuiltOrRemodeled'], 'Not Stated'))",
+            "remainingEconomicLifeYears": "@string(coalesce(body('Parse_Extraction_Result')?['remainingEconomicLifeYears'], 'Not Stated'))",
+            "generalCondition":           "@coalesce(body('Parse_Extraction_Result')?['generalCondition'], 'Not Stated')",
+            "marketExposureTime":         "@coalesce(body('Parse_Extraction_Result')?['marketExposureTime'], 'Not Stated')",
+            "meetsHighestAndBestUse":     "@coalesce(body('Parse_Extraction_Result')?['meetsHighestAndBestUse'], 'Not Stated')"
+          }
         }
       }
     },
 
-    "Build_Row_Summary": {
+    "Create_Sharing_Link": {
+      "type": "ApiConnection",
+      "description": "Generates a fresh link for this specific new file (unlike a shared tracker, every review is a distinct file, so there is no static link to reuse).",
+      "runAfter": { "Populate_Review_Cells": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/createsharinglink",
+        "body": {
+          "siteUrl":  "@parameters('destinationSiteUrl')",
+          "driveId":  "@body('Get_New_File_Properties')?['driveId']",
+          "itemId":   "@body('Get_New_File_Properties')?['itemId']",
+          "linkType": "view",
+          "linkScope": "organization"
+        }
+      }
+    },
+
+    "Build_Review_Summary": {
       "type": "Compose",
-      "runAfter": { "Add_Row_To_Tracker": ["Succeeded"] },
-      "inputs": "@concat(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address not stated'), ', ', coalesce(body('Parse_Extraction_Result')?['city'], '?'), ', ', coalesce(body('Parse_Extraction_Result')?['state'], '?'), ' — ', coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'occupancy not stated'), ', collateral value ', if(equals(body('Parse_Extraction_Result')?['collateralAnalysisValue'], null), 'not stated', concat('$', string(body('Parse_Extraction_Result')?['collateralAnalysisValue']))))"
+      "runAfter": { "Create_Sharing_Link": ["Succeeded"] },
+      "inputs": "@concat(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address not stated'), ', ', outputs('Format_City_State'), ' — ', coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'occupancy not stated'), ', collateral value ', if(equals(body('Parse_Extraction_Result')?['collateralAnalysisValue'], null), 'not stated', concat('$', string(body('Parse_Extraction_Result')?['collateralAnalysisValue']))))"
     },
 
     "Build_Response_Body": {
       "type": "Compose",
-      "runAfter": { "Build_Row_Summary": ["Succeeded"] },
+      "runAfter": { "Build_Review_Summary": ["Succeeded"] },
       "inputs": {
         "status":            "success",
         "errorMessage":      "",
-        "trackerFileUrl":    "@parameters('trackerFileUrl')",
-        "rowSummary":        "@outputs('Build_Row_Summary')",
+        "reviewFileUrl":     "@body('Create_Sharing_Link')?['link']",
+        "reviewFileName":    "@outputs('Build_Destination_File_Name')",
+        "reviewSummary":     "@outputs('Build_Review_Summary')",
         "missingFields":     "@coalesce(body('Parse_Extraction_Result')?['missingFields'], createArray())",
         "needsManualReview": "@coalesce(body('Parse_Extraction_Result')?['needsManualReview'], true)",
         "extractionNotes":   "@coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')"
@@ -181,7 +265,7 @@
 
     "Handle_Extraction_Failure": {
       "type": "Compose",
-      "description": "Fires if either the AI Builder prompt call or the JSON parse fails — most commonly a scanned/non-OCR'd PDF the prompt could not read, or a malformed prompt response.",
+      "description": "Fires if either the AI Builder prompt call or the JSON parse fails — most commonly a scanned/non-OCR'd PDF the prompt could not read, or a malformed prompt response. No file is created in this branch.",
       "runAfter": {
         "Extract_With_AI_Builder": ["Failed", "TimedOut"],
         "Parse_Extraction_Result": ["Failed"]
@@ -190,11 +274,34 @@
       "inputs": {
         "status":            "error",
         "errorMessage":      "@coalesce(actions('Extract_With_AI_Builder')?['error']?['message'], 'The document could not be read. It may be a scanned image without a text layer, or in an unsupported format.')",
-        "trackerFileUrl":    "@parameters('trackerFileUrl')",
-        "rowSummary":        "",
+        "reviewFileUrl":     "",
+        "reviewFileName":    "",
+        "reviewSummary":     "",
         "missingFields":     [],
         "needsManualReview": true,
-        "extractionNotes":   "Extraction failed — no row was added to the tracker."
+        "extractionNotes":   "Extraction failed — no workbook was created."
+      }
+    },
+
+    "Handle_Write_Failure": {
+      "type": "Compose",
+      "description": "Fires if extraction succeeded but the file copy, cell population, or sharing-link step failed — most commonly a misconfigured templateFilePath/destinationFolderPath parameter, the Office Script not present on the copied file, or a sheet name mismatch ('RE Collateral').",
+      "runAfter": {
+        "Copy_Template_To_New_File": ["Failed", "TimedOut"],
+        "Get_New_File_Properties":   ["Failed", "TimedOut"],
+        "Populate_Review_Cells":     ["Failed", "TimedOut"],
+        "Create_Sharing_Link":       ["Failed", "TimedOut"]
+      },
+      "runtimeConfiguration": { "runAfterConfiguration": { "matchStrategy": "AtLeastOne" } },
+      "inputs": {
+        "status":            "error",
+        "errorMessage":      "@coalesce(actions('Populate_Review_Cells')?['error']?['message'], actions('Copy_Template_To_New_File')?['error']?['message'], actions('Get_New_File_Properties')?['error']?['message'], actions('Create_Sharing_Link')?['error']?['message'], 'The extracted data could not be written to a new workbook. Check the template/destination parameters and the Office Script.')",
+        "reviewFileUrl":     "",
+        "reviewFileName":    "@outputs('Build_Destination_File_Name')",
+        "reviewSummary":     "",
+        "missingFields":     "@coalesce(body('Parse_Extraction_Result')?['missingFields'], createArray())",
+        "needsManualReview": true,
+        "extractionNotes":   "Data was extracted from the PDF but the workbook could not be created/populated — see errorMessage."
       }
     }
   },
@@ -207,22 +314,27 @@
     "aiBuilderPromptId": {
       "defaultValue": "REPLACE_WITH_AI_BUILDER_PROMPT_GUID",
       "type": "String",
-      "description": "GUID of the 'Appraisal Review Field Extraction' AI Builder Prompt, created once per environment (see DEPLOYMENT.md)."
+      "description": "GUID of the 'Appraisal Review Field Extraction' AI Builder Prompt, created once per environment (see DEPLOYMENT.md Part B)."
     },
-    "trackerDriveId": {
-      "defaultValue": "REPLACE_WITH_SHAREPOINT_DRIVE_ID",
+    "templateSiteUrl": {
+      "defaultValue": "REPLACE_WITH_TEMPLATE_SHAREPOINT_SITE_URL",
       "type": "String",
-      "description": "Drive (document library) ID that holds the single shared tracker workbook."
+      "description": "SharePoint site that hosts the bank's own appraisal review template workbook (sheet 'RE Collateral'). Designate this to point at wherever your team actually keeps the template — this flow does not ship a template of its own."
     },
-    "trackerFileId": {
-      "defaultValue": "REPLACE_WITH_TRACKER_WORKBOOK_FILE_ID",
+    "templateFilePath": {
+      "defaultValue": "REPLACE_WITH_TEMPLATE_FILE_PATH",
       "type": "String",
-      "description": "File ID of the tracker workbook provisioned once from templates/Appraisal-Review-Tracker-Template.xlsx."
+      "description": "Server-relative path to the template file within templateSiteUrl, e.g. /sites/CreditRisk/Shared Documents/Templates/Appraisal Review Template.xlsx."
     },
-    "trackerFileUrl": {
-      "defaultValue": "REPLACE_WITH_TRACKER_SHARING_LINK",
+    "destinationSiteUrl": {
+      "defaultValue": "REPLACE_WITH_DESTINATION_SHAREPOINT_SITE_URL",
       "type": "String",
-      "description": "Static sharing link to the tracker workbook, generated once at setup time and reused on every run (see costNotes above)."
+      "description": "SharePoint site where completed, per-review workbooks should be saved. Can be the same site as the template or a different one."
+    },
+    "destinationFolderPath": {
+      "defaultValue": "REPLACE_WITH_DESTINATION_FOLDER_PATH",
+      "type": "String",
+      "description": "Server-relative destination folder path within destinationSiteUrl, e.g. /sites/CreditRisk/Shared Documents/Appraisal Reviews."
     }
   }
 }

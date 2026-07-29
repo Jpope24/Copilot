@@ -3,10 +3,10 @@ modelDescription: >
   Accepts an appraisal review PDF attached in a Teams chat or channel,
   extracts 17 credit-risk data points (occupancy, address, collateral value,
   valuation type, appraiser/reviewer names and dates, building metrics,
-  condition, exposure time, and highest-and-best-use conclusion), appends the
-  results as a new row in the shared Appraisal Review Tracker workbook via
-  Shared-AppraisalPdfToExcel, and replies with a summary plus a link to the
-  updated spreadsheet.
+  condition, exposure time, and highest-and-best-use conclusion), copies the
+  bank's own appraisal review template to a new workbook and writes the
+  values into it via Shared-AppraisalPdfToExcel, and replies with a summary
+  plus a link to the new file.
 
 triggers:
   - kind: OnRecognizedIntent
@@ -17,7 +17,7 @@ triggers:
         - Extract appraisal
         - Process appraisal review
         - Read this appraisal
-        - Add this appraisal to the tracker
+        - Create an appraisal review workbook
     actions:
 
       # ── Step 1: Get the requestor's identity for the audit trail ─────────
@@ -37,7 +37,7 @@ triggers:
         variable: topic.AppraisalFile
         entity: Attachment
         prompt: >
-          Attach the appraisal review PDF you'd like added to the tracker.
+          Attach the appraisal review PDF you'd like processed.
 
       # ── Step 3: Basic client-side validation before spending AI Builder credits ──
       - kind: ConditionNode
@@ -71,7 +71,7 @@ triggers:
           Got it — extracting data from ${topic.AppraisalFile.name}. This
           usually takes under a minute.
 
-      # ── Step 4: Extract + write to tracker via the shared flow ───────────
+      # ── Step 4: Extract + create the populated workbook via the shared flow ──
       - kind: InvokeFlowAction
         id: callExtractionFlow
         flowId: Shared-AppraisalPdfToExcel
@@ -81,13 +81,14 @@ triggers:
           requestedByName:  =topic.requestedByName
           requestedByEmail: =topic.requestedByEmail
         outputs:
-          status:                  topic.flowStatus
-          errorMessage:            topic.flowError
-          trackerFileUrl:          topic.trackerFileUrl
-          rowSummary:              topic.rowSummary
-          missingFields:           topic.missingFields
-          needsManualReview:       topic.needsManualReview
-          extractionNotes:         topic.extractionNotes
+          status:            topic.flowStatus
+          errorMessage:      topic.flowError
+          reviewFileUrl:     topic.reviewFileUrl
+          reviewFileName:    topic.reviewFileName
+          reviewSummary:     topic.reviewSummary
+          missingFields:     topic.missingFields
+          needsManualReview: topic.needsManualReview
+          extractionNotes:   topic.extractionNotes
 
       # ── Step 5: Report back ───────────────────────────────────────────────
       - kind: ConditionNode
@@ -101,25 +102,23 @@ triggers:
               - kind: SendActivity
                 id: sendSuccessNeedsReview
                 activity: >
-                  Row added to the Appraisal Review Tracker for
-                  ${topic.AppraisalFile.name}. **Some fields need manual
-                  verification**: ${Join(topic.missingFields, ", ")}.
-                  ${topic.extractionNotes}
+                  Created ${topic.reviewFileName} from ${topic.AppraisalFile.name}.
+                  **Some fields need manual verification**:
+                  ${Join(topic.missingFields, ", ")}. ${topic.extractionNotes}
 
-                  Open the tracker: ${topic.trackerFileUrl}
+                  Open the workbook: ${topic.reviewFileUrl}
             alternate:
               - kind: SendActivity
                 id: sendSuccessClean
                 activity: >
-                  Row added to the Appraisal Review Tracker for
-                  ${topic.AppraisalFile.name}. All 17 fields were extracted
-                  with no flags.
+                  Created ${topic.reviewFileName} from ${topic.AppraisalFile.name}.
+                  All 17 fields were extracted with no flags.
 
-                  Open the tracker: ${topic.trackerFileUrl}
+                  Open the workbook: ${topic.reviewFileUrl}
         alternate:
           - kind: SendActivity
             id: sendFailure
             activity: >
               Extraction failed for ${topic.AppraisalFile.name}: ${topic.flowError}.
-              No row was added. Please retry, or add this appraisal to the
-              tracker manually if the problem persists.
+              No workbook was created. Please retry, or complete this
+              appraisal review manually if the problem persists.

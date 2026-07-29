@@ -2,7 +2,7 @@
 
 > **DEPLOYMENT NOTE**: This file has two parts:
 > 1. A **Deployment Configuration** block — customize this for your environment
->    (tracker library location, reviewer routing, cost guardrails).
+>    (template/destination location, reviewer routing, cost guardrails).
 > 2. **Fixed Requirements** below the horizontal rule — keep these identical
 >    across environments so the output JSON contract matches what
 >    `Shared-AppraisalPdfToExcel` expects.
@@ -24,15 +24,28 @@
 
 **Purpose**: Reads a commercial real estate appraisal review PDF attached in a
 Microsoft Teams chat or channel, extracts a fixed set of credit-risk data
-points, and hands them to `Shared-AppraisalPdfToExcel`, which writes them into
-a new row of the bank's Appraisal Review Tracker workbook and returns a link
-to the populated file.
+points, and hands them to `Shared-AppraisalPdfToExcel`, which copies the
+bank's own appraisal review template to a new workbook, writes the extracted
+values into that workbook's named cells (sheet `RE Collateral`), and returns
+a link to the new file.
 
 ### Requestor Context
 
 The calling flow logs who requested each extraction for audit purposes. No
 configuration needed here — the topic reads the Teams user's display name and
 email automatically from `System.User` and passes them to the flow.
+
+### Template & Destination Location
+
+`Shared-AppraisalPdfToExcel` does not ship a template — it copies **your**
+team's existing appraisal review template (the one with `F23`–`F32` and
+`I21`–`I28` on sheet `RE Collateral`) and saves the populated copy to a
+location you designate. Both are flow-level parameters
+(`templateSiteUrl` / `templateFilePath` and `destinationSiteUrl` /
+`destinationFolderPath`) set once during deployment — see DEPLOYMENT.md,
+Part A. Nothing about the template or destination folder is configured here
+in the agent; changing either is a flow-parameter edit, not a republish of
+this agent.
 
 ### Cost Guardrails
 
@@ -63,17 +76,18 @@ directly or by @mentioning the bot in a shared channel. The topic:
 3. The flow performs extraction (via an AI Builder prompt, not a separately
    provisioned Azure AI resource — this keeps the tool inside the team's
    existing Power Platform/Copilot licensing rather than adding a new billed
-   Azure service), writes a new row into the shared Excel tracker, and
-   returns a SharePoint link to the updated workbook plus the row's data for
+   Azure service), copies the designated template to a new, uniquely named
+   workbook, writes the extracted values into that workbook's named cells,
+   and returns a link to the new file plus the extracted data for
    confirmation.
 4. The agent replies in the same Teams conversation with a summary of what
    was extracted, a flag for any fields it could not find, and the link to
-   the updated spreadsheet.
+   the new workbook.
 
-No data is emailed and no new document is created per request — every
-extraction appends one row to a single shared tracker workbook, so credit
-risk has one running system of record instead of a scattered pile of
-one-off files.
+No data is emailed. Each extraction produces exactly one new workbook —
+never a shared file two concurrent requests could collide on — named from
+the property's street address and a timestamp, and saved to the destination
+folder configured for this tool (see Template & Destination Location above).
 
 ---
 
@@ -119,7 +133,9 @@ itself; reviewer name and review date come from the review memo/sign-off.
 ## Output Requirements
 
 Return extraction results in exactly this JSON structure. The calling flow
-depends on this schema to populate the tracker row.
+depends on this schema to populate the new workbook's cells (the JSON key →
+cell mapping lives in `flows/Shared-AppraisalPdfToExcel.json` →
+`_meta.cellMap`, and in the Office Script `flows/scripts/PopulateAppraisalReviewCells.ts`).
 
 ```json
 {
@@ -179,4 +195,4 @@ depends on this schema to populate the tracker row.
 - State plainly what was extracted and what was not — this is a credit risk
   workflow, not a chat conversation. No filler, no enthusiasm.
 - Always surface `missingFields` and `extractionNotes` in the reply so the
-  analyst knows what to verify manually before relying on the row.
+  analyst knows what to verify manually before relying on the workbook.
