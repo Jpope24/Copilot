@@ -16,6 +16,7 @@
 12. [Running Multiple Topics](#running-multiple-topics)
 13. [Troubleshooting](#troubleshooting)
 14. [Stablecoin & Stapleton Agent Deployment](#stablecoin--stapleton-agent-deployment)
+15. [Appraisal PDF-to-Excel Extractor Deployment](#appraisal-pdf-to-excel-extractor-deployment)
 
 ---
 
@@ -29,13 +30,16 @@ Copilot/
 │   ├── stablecoin-agent-instructions.md
 │   ├── stablecoin-agent-topic.yaml
 │   ├── stapleton-agent-instructions.md
-│   └── stapleton-agent-topic.yaml
+│   ├── stapleton-agent-topic.yaml
+│   ├── appraisal-agent-instructions.md       ← Appraisal Review Extractor system prompt
+│   └── appraisal-agent-topic.yaml            ← Copilot Studio topic YAML
 ├── flows/
 │   ├── Shared-FormatResearchReport.json      ← HTML formatter flow definition
 │   ├── Shared-ResearchAgentScheduler.json    ← Scheduled orchestrator definition
 │   ├── Shared-StablecoinEmailFlow.json       ← Shared email sender definition
 │   ├── Shared-FormatStablecoinReport.json
 │   ├── Shared-FormatStapletonReport.json
+│   ├── Shared-AppraisalPdfToExcel.json       ← PDF extraction → Excel tracker flow definition
 │   ├── build_packages.py                     ← Script to generate .zip packages
 │   └── packages/
 │       ├── Shared-FormatResearchReport.zip   ← Ready to import
@@ -43,10 +47,12 @@ Copilot/
 │       ├── Shared-StablecoinEmailFlow.zip    ← Ready to import
 │       ├── Shared-FormatStablecoinReport.zip
 │       └── Shared-FormatStapletonReport.zip
+│       (Shared-AppraisalPdfToExcel has no .zip — see note in its deployment section)
 ├── templates/
 │   ├── research-report.html                  ← Purple-branded HTML email template
 │   ├── stablecoin-report.html
-│   └── stapleton-report.html
+│   ├── stapleton-report.html
+│   └── Appraisal-Review-Tracker-Template.xlsx ← Master Excel tracker (copy once, then reuse)
 └── DEPLOYMENT.md
 ```
 
@@ -1220,3 +1226,328 @@ For each agent, create a Power Automate Scheduled flow (daily 07:00 UTC)
 with a single HTTP action that POSTs to the agent's Direct Line endpoint
 with the trigger phrase from its instructions. Store the Direct Line secret
 in Azure Key Vault and reference it via the Key Vault connector.
+
+---
+
+## Appraisal PDF-to-Excel Extractor Deployment
+
+**Audience:** bank credit risk team. **Trigger:** a Teams chat or channel
+message with an appraisal review PDF attached. **Output:** one new row in a
+shared Excel tracker (`AppraisalReviewData`), with a link back to the file.
+
+### What this tool does
+
+An analyst attaches an appraisal review PDF to the **Appraisal Review
+Extractor** bot in Teams. The bot extracts 17 credit-risk data points
+(occupancy type, address, collateral analysis value, valuation type,
+appraiser/reviewer names and dates, building metrics, condition, market
+exposure time, and the highest-and-best-use conclusion — full list in
+[`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)),
+appends them as a new row to a single shared workbook, and replies in Teams
+with a plain-language summary, any fields it could not find, and a link to
+open the updated spreadsheet.
+
+### Why this design (cost rationale)
+
+| Choice | Why it keeps cost down |
+|---|---|
+| Extraction via an **AI Builder Prompt**, not a new Azure OpenAI or Azure AI Document Intelligence resource | Reuses AI Builder capacity your Power Platform/Copilot Studio licensing already includes, rather than standing up and paying for a separate Azure resource with its own meter and ops overhead. |
+| Flow triggered by Copilot Studio's **native child-flow trigger** ("When Copilot Studio calls a flow"), not an HTTP Request trigger | Avoids requiring a Power Automate **Premium** license just to receive the call — every connector this flow uses (Excel Online (Business), SharePoint) is a standard connector. |
+| **One shared tracker workbook**, appended to via "Add a row into a table", instead of copying the template per request | No per-run file-copy action, no document sprawl in SharePoint, and credit risk gets one auditable system of record instead of hundreds of one-off spreadsheets. |
+| Tracker **sharing link computed once** at setup and passed to the flow as a parameter | Saves an API call on every single extraction — the link never changes. |
+| **15 MB / 40-page cap** enforced in the Copilot Studio topic before the flow (and any AI Builder credits) are invoked | A malformed or oversized upload is rejected for free, before it can burn AI Builder credits or time out. |
+| **No retries** on a failed extraction | A failure is surfaced to the analyst immediately instead of silently doubling the credit cost on a document likely to fail again. |
+
+The only new recurring cost is **AI Builder credits per PDF processed**
+(typically a few pages of extracted text per document — check your tenant's
+AI Builder credit balance and per-prompt cost in the Power Platform admin
+center before rollout) plus whatever **Copilot Studio message** consumption
+your licensing already meters for agent conversations.
+
+### Prerequisites
+
+| Requirement | Why it is needed |
+|---|---|
+| **Microsoft Copilot Studio** license | To create, publish, and add the agent to Teams |
+| **AI Builder** capacity (included/trial credits or a purchased add-on) | Runs the extraction prompt — see cost note above |
+| A **SharePoint site and document library** the credit risk team already uses (or a new one) | Hosts the single shared tracker workbook |
+| **Excel Online (Business)** and **SharePoint** connections (standard, no Premium required) | Used by the flow to append rows |
+| **Teams** access to add/pin the agent to a channel or chat | Where analysts interact with the tool |
+| An account with **Environment Maker** (or higher) in the target Power Platform environment | To create the flow, prompt, and agent |
+
+> **A note on the AI Builder Prompt and this flow's package.** Unlike the
+> other flows in this repo, `Shared-AppraisalPdfToExcel` is **not** shipped
+> as a pre-built `.zip` in `flows/packages/`. The flow's AI Builder step
+> references a Prompt GUID and a SharePoint drive/file ID that only exist
+> *after* you create them in your own environment — a portable zip can't
+> pre-populate those, and importing one with placeholder GUIDs would just
+> fail. Build this one flow by hand following Parts A–C below; `flows/Shared-AppraisalPdfToExcel.json`
+> is the reference definition to build from (same idea as the "Option 2:
+> manual creation" flows earlier in this guide).
+
+---
+
+### Part A — Provision the shared tracker workbook (one-time)
+
+1. Go to the SharePoint site / document library your credit risk team uses
+   for shared files.
+2. Upload `templates/Appraisal-Review-Tracker-Template.xlsx` to that
+   library. Rename it if you like (e.g. `Appraisal Review Tracker.xlsx`) —
+   this becomes the **one, permanent** file every extraction appends to.
+3. Open the file in Excel Online and confirm the table `AppraisalReviewData`
+   is present (click any cell in the header row — the **Table Design** tab
+   should appear and show the table name).
+4. Click **Share** → **Copy link**. Set permissions to "People in your
+   organization" (or narrower, per your data classification policy) with
+   **Can edit** access for the credit risk team and **Can view** for anyone
+   else who needs it. Save this URL — it is `trackerFileUrl` in Part C.
+5. Note the library's **Drive ID** and the file's **Item ID** — you'll need
+   both for the Excel Online (Business) action in Part C. The easiest way:
+   in Power Automate, add a temporary "Get file properties" (SharePoint)
+   action pointed at this file, run it once, and read `{Identifier}` from
+   the output (drive ID) and `{ItemId}` (file ID). Delete the temporary
+   flow afterward.
+
+---
+
+### Part B — Create the AI Builder Prompt
+
+This is the extraction engine. It replaces what would otherwise be a
+separately-provisioned OCR/document-intelligence service.
+
+1. Go to [make.powerautomate.com](https://make.powerautomate.com) (or
+   [make.powerapps.com](https://make.powerapps.com)) → **AI Builder** →
+   **Prompts** → **+ Create a new prompt** → **Start from scratch**.
+2. Name it `Appraisal Review Field Extraction`.
+3. Under **Model**, choose a GPT-class model available in your tenant's AI
+   Builder Prompt list (prefer a lower-cost/mini tier if your tenant offers
+   one — extraction is a well-structured task and does not need the
+   largest model).
+4. Add an **input variable**:
+   - Name: `document`
+   - Type: **File**
+5. In the prompt instructions box, paste the **Extraction Requirements**
+   and **Output Requirements** sections from
+   [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)
+   (from "## Extraction Requirements" through the end of "## Output
+   Requirements"), then reference the file input at the top: `Extract data
+   from this appraisal review document: {document}`.
+6. Set the **Response format** to **JSON** and paste the same JSON schema
+   shown in the "Output Requirements" example so the model's output is
+   constrained to that shape.
+7. Click **Test**, upload a sample appraisal review PDF, and confirm the
+   response is valid JSON matching the 17-field schema before saving.
+8. **Save** and **Publish** the prompt.
+9. Copy the prompt's GUID from the browser URL
+   (`.../prompts/<PROMPT_GUID>/edit`) — this is `aiBuilderPromptId` in
+   Part C.
+
+---
+
+### Part C — Build Shared-AppraisalPdfToExcel
+
+> **Reference file:** `flows/Shared-AppraisalPdfToExcel.json`
+
+1. Go to [make.powerautomate.com](https://make.powerautomate.com) → **+
+   Create** → **Automated cloud flow**.
+2. Name it `Shared-AppraisalPdfToExcel`.
+3. In the trigger search box, type **"Power Virtual Agents"** (shows as
+   *"When Power Virtual Agents calls a flow"* — this is Copilot Studio's
+   native child-flow trigger) and select it. Click **Create**.
+4. On the trigger card, click **+ Add an input** four times and configure:
+   | Name | Type |
+   |---|---|
+   | `fileContent` | File |
+   | `fileName` | Text |
+   | `requestedByName` | Text |
+   | `requestedByEmail` | Text |
+
+**Add these actions in order:**
+
+**Action 1 — Compose (`Init_ExtractionTimestamp`)**
+- Inputs (expression): `utcNow()`
+
+**Action 2 — AI Builder: "Predict"** (search "AI Builder" in the connector
+list, action **Predict**, or your tenant's equivalent "Run a prompt" action)
+- Prompt: select `Appraisal Review Field Extraction` (from Part B)
+- `document` input: pick **fileContent** from Dynamic content (the trigger's
+  file input)
+
+**Action 3 — Parse JSON**
+- Content: the output of the AI Builder Predict action
+- Schema: paste the `properties` block from
+  `flows/Shared-AppraisalPdfToExcel.json` → `actions.Parse_Extraction_Result.inputs.schema`
+
+**Action 4 — Compose (`Format_Appraiser_Names`)**
+- Inputs (expression):
+  ```
+  join(coalesce(body('Parse_JSON')?['appraiserNames'], createArray('Not Stated')), '; ')
+  ```
+  (replace `Parse_JSON` with your actual Parse JSON step name)
+
+**Action 5 — Compose (`Format_Missing_Fields`)**
+- Inputs (expression):
+  ```
+  if(empty(body('Parse_JSON')?['missingFields']), 'None', join(body('Parse_JSON')?['missingFields'], ', '))
+  ```
+
+**Action 6 — Excel Online (Business): "Add a row into a table"**
+- Location: **SharePoint Site**
+- Document Library: the library from Part A
+- File: the tracker workbook from Part A
+- Table: `AppraisalReviewData`
+- Map each column to a value — use the exact mapping in
+  `flows/Shared-AppraisalPdfToExcel.json` → `actions.Add_Row_To_Tracker.inputs.body`
+  (25 columns: 4 metadata fields from the trigger, 18 extracted fields from
+  Parse JSON, 3 quality fields from Parse JSON). For numeric fields
+  (`Collateral Analysis Value`, `Gross Building Area (SF)`, etc.) pick the
+  Parse JSON output directly — leave blank cells as blank rather than typing
+  `0` when the model returned null.
+
+**Action 7 — Compose (`Build_Row_Summary`)**
+- Inputs (expression): see `flows/Shared-AppraisalPdfToExcel.json` →
+  `actions.Build_Row_Summary.inputs` — builds the one-line summary sent back
+  to Teams.
+
+**Action 8 — Compose (`Build_Response_Body`)**
+- Inputs: a JSON object with `status`, `errorMessage`, `trackerFileUrl`,
+  `rowSummary`, `missingFields`, `needsManualReview`, `extractionNotes` —
+  see the reference file for the exact expression for each.
+
+**Action 9 (parallel error branch) — Compose (`Handle_Extraction_Failure`)**
+- Click the **"..."** menu on the AI Builder Predict action → **Add a
+  parallel branch**, add this Compose action there, and configure **Run
+  after**: the AI Builder step **has failed** and the Parse JSON step **has
+  failed** (Configure run after → check "has failed" on both).
+- Inputs: `status: "error"`, `errorMessage`, and the remaining fields set to
+  safe defaults — see the reference file.
+
+5. Click the trigger card → **Outputs** panel → add an output for each of:
+   `status`, `errorMessage`, `trackerFileUrl`, `rowSummary`, `missingFields`,
+   `needsManualReview`, `extractionNotes`. For each, pick the matching field
+   from **Build_Response_Body** (or **Handle_Extraction_Failure** — Power
+   Automate lets a single output bind to whichever branch actually ran via
+   `coalesce()`; if your tenant's designer doesn't offer that, wrap both
+   Compose outputs in one final `coalesce()` Compose step and bind the
+   trigger outputs to that instead).
+6. In **Flow settings** (or as literal values if your tenant doesn't expose
+   flow-level parameters in the designer), set:
+   - `trackerFileUrl` = the sharing link from Part A step 4
+   - `trackerDriveId` / `trackerFileId` = the IDs from Part A step 5
+   - `aiBuilderPromptId` = the GUID from Part B step 9
+
+   (If your environment doesn't support named flow parameters in the
+   Power Automate designer, hardcode these four values directly into the
+   corresponding actions instead of using `parameters(...)`.)
+7. **Save** the flow.
+
+---
+
+### Part D — Create the Appraisal Review Extractor agent in Copilot Studio
+
+1. Go to [copilotstudio.microsoft.com](https://copilotstudio.microsoft.com),
+   same environment as Parts A–C.
+2. **Create** → **New agent** → **Skip to configure**.
+3. Name: `Appraisal Review Extractor`. Description: *"Extracts credit-risk
+   data points from appraisal review PDFs attached in Teams and appends them
+   to the shared Appraisal Review Tracker."*
+4. **Instructions**: paste the full contents of
+   `agent/appraisal-agent-instructions.md`.
+5. **Topics** → **Add a topic** → **Create from blank** → name it
+   `Extract Appraisal Review` → **More options (···)** → **Open YAML
+   editor** → select all, delete, paste the contents of
+   `agent/appraisal-agent-topic.yaml` → **Save**.
+6. In the topic, confirm the **InvokeFlowAction** step (`callExtractionFlow`)
+   is linked to the `Shared-AppraisalPdfToExcel` flow from Part C — if the
+   YAML paste doesn't auto-bind it, open that step in the visual designer
+   and select the flow from the picker.
+7. **Settings** (gear icon) → **Security** → confirm authentication is
+   appropriate for your tenant (Teams users authenticate via Microsoft
+   Entra ID automatically in the Teams channel).
+8. **Publish** the agent.
+
+---
+
+### Part E — Add the agent to Teams
+
+1. In Copilot Studio, go to **Channels** → **Microsoft Teams**.
+2. Turn the Teams channel **on**. Copilot Studio generates a Teams app
+   package for the agent.
+3. Choose how the credit risk team will use it:
+   - **Direct chat**: click **Open bot**, then have each analyst add it as
+     a personal app in Teams (search for it by name, or your Teams admin
+     can pre-install it tenant-wide).
+   - **Shared channel** (recommended for a team workflow with an audit
+     trail everyone can see): download the app package, have your Teams
+     admin upload it via **Teams admin center → Manage apps** (or
+     **Org-wide app settings** if custom app upload is restricted), then
+     add the app to the credit risk team's channel. Analysts trigger it by
+     @mentioning the bot and attaching the PDF.
+4. Confirm the trigger phrases from the topic YAML work in Teams (e.g.
+   `@Appraisal Review Extractor Extract appraisal`) — Teams requires an
+   @mention or DM to start a conversation with the bot; it does not read
+   every message in a channel.
+
+---
+
+### Part F — Test end-to-end
+
+1. In Teams, message the bot (or @mention it in the channel) with the
+   phrase `Extract appraisal`.
+2. When prompted, attach a sample appraisal review PDF.
+3. Confirm:
+   - The bot acknowledges receipt and reports "Row added..." within about a
+     minute.
+   - Open the tracker link — the new row should have all 25 columns
+     populated (or `Not Stated` / blank for anything genuinely absent from
+     the source PDF).
+   - If you intentionally test with a PDF missing a review sign-off page,
+     confirm `reviewerName` / `reviewDate` come back `Not Stated`,
+     `missingFields` lists them, and the Teams reply flags "needs manual
+     verification."
+4. Test the guardrails: attach a non-PDF file (should be rejected before
+   the flow runs) and, if you have one, a file over 15 MB (should also be
+   rejected before the flow runs — check the flow's run history to confirm
+   it was never triggered).
+
+---
+
+### Troubleshooting (Appraisal Extractor)
+
+**AI Builder Predict step fails or times out**
+- Confirm the prompt is **Published** (not just saved as a draft) in AI
+  Builder.
+- Open the PDF manually — if it's a scanned image with no text layer, the
+  prompt cannot read it. Route these to manual entry; consider a follow-up
+  OCR step only if your team hits this often enough to justify the added
+  cost.
+- Check your tenant's AI Builder credit balance in the Power Platform admin
+  center — a depleted credit pool fails every Predict call.
+
+**Parse JSON step fails with a schema mismatch**
+- Open the AI Builder Predict action's raw output in run history — the
+  model may have returned prose instead of JSON. Re-open the prompt in AI
+  Builder, confirm **Response format** is set to **JSON**, and re-test with
+  Part B step 7's sample PDF.
+
+**"Add a row into a table" fails**
+- Most common cause: `trackerDriveId` / `trackerFileId` are wrong, or the
+  tracker file was moved/renamed after Part A. Re-run "Get file properties"
+  to refresh the IDs.
+- Confirm the Excel Online (Business) connection used by the flow has edit
+  access to the document library.
+
+**Teams reply never arrives / flow doesn't run**
+- Confirm **Part C step 5** — the trigger's Outputs — is fully configured.
+  A "When Power Virtual Agents calls a flow" trigger with no bound outputs
+  returns nothing to the topic, which then shows a blank or generic error.
+- Confirm the topic's `callExtractionFlow` step is bound to the correct
+  flow (Copilot Studio topics silently do nothing if the flow reference is
+  unresolved after a YAML paste).
+
+**Costs climbing faster than expected**
+- Check whether the 15 MB / 40-page guardrail in the topic YAML is still in
+  place — if someone edited the topic and removed it, oversized documents
+  can consume disproportionate AI Builder credits.
+- Confirm `Handle_Extraction_Failure` is wired up correctly so failed runs
+  return immediately rather than looping or retrying.

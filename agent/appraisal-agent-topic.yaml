@@ -1,0 +1,125 @@
+kind: AdaptiveDialog
+modelDescription: >
+  Accepts an appraisal review PDF attached in a Teams chat or channel,
+  extracts 17 credit-risk data points (occupancy, address, collateral value,
+  valuation type, appraiser/reviewer names and dates, building metrics,
+  condition, exposure time, and highest-and-best-use conclusion), appends the
+  results as a new row in the shared Appraisal Review Tracker workbook via
+  Shared-AppraisalPdfToExcel, and replies with a summary plus a link to the
+  updated spreadsheet.
+
+triggers:
+  - kind: OnRecognizedIntent
+    id: main
+    intent:
+      displayName: Extract Appraisal Review
+      triggerQueries:
+        - Extract appraisal
+        - Process appraisal review
+        - Read this appraisal
+        - Add this appraisal to the tracker
+    actions:
+
+      # ── Step 1: Get the requestor's identity for the audit trail ─────────
+      - kind: SetVariable
+        id: setRequestorName
+        variable: topic.requestedByName
+        value: =System.User.DisplayName
+
+      - kind: SetVariable
+        id: setRequestorEmail
+        variable: topic.requestedByEmail
+        value: =System.User.Email
+
+      # ── Step 2: Collect the PDF attachment ────────────────────────────────
+      - kind: Question
+        id: askForFile
+        variable: topic.AppraisalFile
+        entity: Attachment
+        prompt: >
+          Attach the appraisal review PDF you'd like added to the tracker.
+
+      # ── Step 3: Basic client-side validation before spending AI Builder credits ──
+      - kind: ConditionNode
+        id: checkFileType
+        condition: =EndsWith(Lower(topic.AppraisalFile.name), ".pdf") = false
+        consequent:
+          - kind: SendActivity
+            id: rejectNonPdf
+            activity: >
+              That file doesn't look like a PDF (${topic.AppraisalFile.name}).
+              Please attach the appraisal review as a .pdf and try again.
+          - kind: EndDialog
+            id: endAfterReject
+
+      - kind: ConditionNode
+        id: checkFileSize
+        condition: =topic.AppraisalFile.size > 15728640
+        consequent:
+          - kind: SendActivity
+            id: rejectTooLarge
+            activity: >
+              This file is larger than the 15 MB limit set for this tool.
+              Please split or compress the document, or route it to manual
+              review, and try again.
+          - kind: EndDialog
+            id: endAfterSizeReject
+
+      - kind: SendActivity
+        id: sendAckMsg
+        activity: >
+          Got it — extracting data from ${topic.AppraisalFile.name}. This
+          usually takes under a minute.
+
+      # ── Step 4: Extract + write to tracker via the shared flow ───────────
+      - kind: InvokeFlowAction
+        id: callExtractionFlow
+        flowId: Shared-AppraisalPdfToExcel
+        inputs:
+          fileContent:      =topic.AppraisalFile
+          fileName:         =topic.AppraisalFile.name
+          requestedByName:  =topic.requestedByName
+          requestedByEmail: =topic.requestedByEmail
+        outputs:
+          status:                  topic.flowStatus
+          errorMessage:            topic.flowError
+          trackerFileUrl:          topic.trackerFileUrl
+          rowSummary:              topic.rowSummary
+          missingFields:           topic.missingFields
+          needsManualReview:       topic.needsManualReview
+          extractionNotes:         topic.extractionNotes
+
+      # ── Step 5: Report back ───────────────────────────────────────────────
+      - kind: ConditionNode
+        id: checkFlowStatus
+        condition: =topic.flowStatus = "success"
+        consequent:
+          - kind: ConditionNode
+            id: checkNeedsReview
+            condition: =topic.needsManualReview = true
+            consequent:
+              - kind: SendActivity
+                id: sendSuccessNeedsReview
+                activity: >
+                  Row added to the Appraisal Review Tracker for
+                  ${topic.AppraisalFile.name}. **Some fields need manual
+                  verification**: ${Join(topic.missingFields, ", ")}.
+                  ${topic.extractionNotes}
+
+                  Open the tracker: ${topic.trackerFileUrl}
+            alternate:
+              - kind: SendActivity
+                id: sendSuccessClean
+                activity: >
+                  Row added to the Appraisal Review Tracker for
+                  ${topic.AppraisalFile.name}. All 17 fields were extracted
+                  with no flags.
+
+                  Open the tracker: ${topic.trackerFileUrl}
+        alternate:
+          - kind: SendActivity
+            id: sendFailure
+            activity: >
+              Extraction failed for ${topic.AppraisalFile.name}: ${topic.flowError}.
+              No row was added. Please retry, or add this appraisal to the
+              tracker manually if the problem persists.

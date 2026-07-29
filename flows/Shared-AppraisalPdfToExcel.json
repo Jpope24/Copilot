@@ -1,0 +1,228 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "_meta": {
+    "flowName": "Shared-AppraisalPdfToExcel",
+    "description": "Called by the 'Appraisal Review Extractor' Copilot Studio agent. Accepts an appraisal review PDF (as a file input, not an HTTP upload — see trigger notes), extracts 17 credit-risk data points via an AI Builder prompt, appends one row to the shared Appraisal Review Tracker workbook, and returns a link plus a summary to the agent.",
+    "version": "1.0.0",
+    "invokedBy": "Appraisal Review Extractor (Copilot Studio agent), via InvokeFlowAction — not called over HTTP by other flows/agents",
+    "connectors": [
+      "AI Builder (shared_aibuilder) — Predict with a custom Prompt (see Deployment Configuration below)",
+      "Excel Online (Business) (shared_excelonlinebusiness) — Add a row into a table",
+      "SharePoint (shared_sharepointonline) — used once at setup time to provision the tracker file; not called per run"
+    ],
+    "costNotes": [
+      "No Azure OpenAI, Azure AI Document Intelligence, or Azure Function is provisioned for this tool — extraction runs entirely on the AI Builder prompt included with the team's Power Platform/Copilot Studio capacity, so the only new consumption is AI Builder credits per PDF processed.",
+      "The tracker's SharePoint sharing link is computed once at deployment time and passed in as a parameter (trackerFileUrl) rather than requested from SharePoint on every run — saves one API call per extraction and avoids link-churn.",
+      "One shared, ever-growing tracker workbook is used instead of copying the template per request, so there is no per-run file-copy cost and no runaway document sprawl in SharePoint.",
+      "The agent enforces a 15 MB / 40-page cap before calling this flow (see agent/appraisal-agent-instructions.md), so this flow never spends AI Builder credits on an oversized or clearly-invalid upload."
+    ]
+  },
+
+  "trigger": {
+    "type": "Request",
+    "kind": "PowerVirtualAgents",
+    "description": "Native 'When Copilot Studio calls a flow' trigger. No Premium HTTP Request trigger is used, so this flow does not require a Power Automate Premium license — only the connectors below (Excel Online (Business) and SharePoint are standard; AI Builder consumption is billed separately via AI Builder credits).",
+    "inputs": {
+      "schema": {
+        "type": "object",
+        "required": ["fileContent", "fileName", "requestedByName", "requestedByEmail"],
+        "properties": {
+          "fileContent": {
+            "type": "file",
+            "description": "The appraisal review PDF, passed as a File-type input from the agent's Attachment question (topic.AppraisalFile)."
+          },
+          "fileName": { "type": "string" },
+          "requestedByName": { "type": "string" },
+          "requestedByEmail": { "type": "string" }
+        }
+      }
+    },
+    "outputs": {
+      "description": "Configured on the trigger's Outputs panel in the designer (see DEPLOYMENT.md) — each output is bound to an expression pointing at the corresponding Compose action below.",
+      "status": "@outputs('Build_Response_Body')?['status']",
+      "errorMessage": "@outputs('Build_Response_Body')?['errorMessage']",
+      "trackerFileUrl": "@outputs('Build_Response_Body')?['trackerFileUrl']",
+      "rowSummary": "@outputs('Build_Response_Body')?['rowSummary']",
+      "missingFields": "@outputs('Build_Response_Body')?['missingFields']",
+      "needsManualReview": "@outputs('Build_Response_Body')?['needsManualReview']",
+      "extractionNotes": "@outputs('Build_Response_Body')?['extractionNotes']"
+    }
+  },
+
+  "actions": {
+
+    "Init_ExtractionTimestamp": {
+      "type": "Compose",
+      "runAfter": {},
+      "inputs": "@utcNow()"
+    },
+
+    "Extract_With_AI_Builder": {
+      "type": "ApiConnection",
+      "description": "Calls the custom AI Builder Prompt 'Appraisal Review Field Extraction' (created once in AI Builder > Prompts, see DEPLOYMENT.md). The prompt takes the PDF as a File input variable and returns structured JSON matching the schema in agent/appraisal-agent-instructions.md — no separate OCR step or Azure Document Intelligence resource is needed for machine-readable PDFs.",
+      "runAfter": { "Init_ExtractionTimestamp": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_aibuilder']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/apis/shared_aibuilder/v1.0/prompts/@{parameters('aiBuilderPromptId')}/predict",
+        "body": {
+          "document": "@triggerBody()?['fileContent']"
+        }
+      }
+    },
+
+    "Parse_Extraction_Result": {
+      "type": "ParseJson",
+      "runAfter": { "Extract_With_AI_Builder": ["Succeeded"] },
+      "inputs": {
+        "content": "@body('Extract_With_AI_Builder')",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "occupancyType":              { "type": "string" },
+            "city":                       { "type": "string" },
+            "state":                      { "type": "string" },
+            "streetAddress":              { "type": "string" },
+            "collateralAnalysisValue":    { "type": ["number", "null"] },
+            "valuationType":              { "type": "string" },
+            "appraiserNames":             { "type": "array", "items": { "type": "string" } },
+            "appraisalDate":              { "type": "string" },
+            "reviewerName":               { "type": "string" },
+            "reviewDate":                 { "type": "string" },
+            "grossBuildingAreaSqFt":      { "type": ["number", "null"] },
+            "netRentableAreaSqFt":        { "type": ["number", "null"] },
+            "numberOfBuildings":          { "type": ["integer", "null"] },
+            "yearBuiltOrRemodeled":       { "type": ["integer", "string", "null"] },
+            "remainingEconomicLifeYears": { "type": ["integer", "null"] },
+            "generalCondition":           { "type": "string" },
+            "marketExposureTime":         { "type": "string" },
+            "meetsHighestAndBestUse":     { "type": "string" },
+            "missingFields":              { "type": "array", "items": { "type": "string" } },
+            "needsManualReview":          { "type": "boolean" },
+            "extractionNotes":            { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "Format_Appraiser_Names": {
+      "type": "Compose",
+      "runAfter": { "Parse_Extraction_Result": ["Succeeded"] },
+      "inputs": "@join(coalesce(body('Parse_Extraction_Result')?['appraiserNames'], createArray('Not Stated')), '; ')"
+    },
+
+    "Format_Missing_Fields": {
+      "type": "Compose",
+      "runAfter": { "Format_Appraiser_Names": ["Succeeded"] },
+      "inputs": "@if(empty(body('Parse_Extraction_Result')?['missingFields']), 'None', join(body('Parse_Extraction_Result')?['missingFields'], ', '))"
+    },
+
+    "Add_Row_To_Tracker": {
+      "type": "ApiConnection",
+      "description": "Appends one row to the AppraisalReviewData table in the single shared tracker workbook (parameters.trackerSiteUrl / parameters.trackerFileId — provisioned once from templates/Appraisal-Review-Tracker-Template.xlsx, see DEPLOYMENT.md). No new file is created per run.",
+      "runAfter": { "Format_Missing_Fields": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_excelonlinebusiness']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/drives/@{encodeURIComponent(parameters('trackerDriveId'))}/items/@{encodeURIComponent(parameters('trackerFileId'))}/tables/@{encodeURIComponent('AppraisalReviewData')}/rows",
+        "body": {
+          "Date Added":                    "@outputs('Init_ExtractionTimestamp')",
+          "Requested By":                  "@triggerBody()?['requestedByName']",
+          "Requestor Email":               "@triggerBody()?['requestedByEmail']",
+          "Source File Name":              "@triggerBody()?['fileName']",
+          "Street Address":                "@coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Not Stated')",
+          "City":                          "@coalesce(body('Parse_Extraction_Result')?['city'], 'Not Stated')",
+          "State":                         "@coalesce(body('Parse_Extraction_Result')?['state'], 'Not Stated')",
+          "Primary Occupancy Type":        "@coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'Not Stated')",
+          "Collateral Analysis Value":     "@body('Parse_Extraction_Result')?['collateralAnalysisValue']",
+          "Valuation Type":                "@coalesce(body('Parse_Extraction_Result')?['valuationType'], 'Not Stated')",
+          "Appraiser Name(s)":             "@outputs('Format_Appraiser_Names')",
+          "Date of Appraisal":             "@body('Parse_Extraction_Result')?['appraisalDate']",
+          "Appraisal Reviewer":            "@coalesce(body('Parse_Extraction_Result')?['reviewerName'], 'Not Stated')",
+          "Date of Review":                "@body('Parse_Extraction_Result')?['reviewDate']",
+          "Gross Building Area (SF)":      "@body('Parse_Extraction_Result')?['grossBuildingAreaSqFt']",
+          "Net Rentable Area (SF)":        "@body('Parse_Extraction_Result')?['netRentableAreaSqFt']",
+          "Number of Buildings":           "@body('Parse_Extraction_Result')?['numberOfBuildings']",
+          "Year Built/Remodeled":          "@body('Parse_Extraction_Result')?['yearBuiltOrRemodeled']",
+          "Remaining Economic Life (Yrs)": "@body('Parse_Extraction_Result')?['remainingEconomicLifeYears']",
+          "General Condition":             "@coalesce(body('Parse_Extraction_Result')?['generalCondition'], 'Not Stated')",
+          "Market Exposure Time":          "@coalesce(body('Parse_Extraction_Result')?['marketExposureTime'], 'Not Stated')",
+          "Meets Highest & Best Use":      "@coalesce(body('Parse_Extraction_Result')?['meetsHighestAndBestUse'], 'Not Stated')",
+          "Missing Fields":                "@outputs('Format_Missing_Fields')",
+          "Needs Manual Review":           "@body('Parse_Extraction_Result')?['needsManualReview']",
+          "Extraction Notes":              "@coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')"
+        }
+      }
+    },
+
+    "Build_Row_Summary": {
+      "type": "Compose",
+      "runAfter": { "Add_Row_To_Tracker": ["Succeeded"] },
+      "inputs": "@concat(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address not stated'), ', ', coalesce(body('Parse_Extraction_Result')?['city'], '?'), ', ', coalesce(body('Parse_Extraction_Result')?['state'], '?'), ' — ', coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'occupancy not stated'), ', collateral value ', if(equals(body('Parse_Extraction_Result')?['collateralAnalysisValue'], null), 'not stated', concat('$', string(body('Parse_Extraction_Result')?['collateralAnalysisValue']))))"
+    },
+
+    "Build_Response_Body": {
+      "type": "Compose",
+      "runAfter": { "Build_Row_Summary": ["Succeeded"] },
+      "inputs": {
+        "status":            "success",
+        "errorMessage":      "",
+        "trackerFileUrl":    "@parameters('trackerFileUrl')",
+        "rowSummary":        "@outputs('Build_Row_Summary')",
+        "missingFields":     "@coalesce(body('Parse_Extraction_Result')?['missingFields'], createArray())",
+        "needsManualReview": "@coalesce(body('Parse_Extraction_Result')?['needsManualReview'], true)",
+        "extractionNotes":   "@coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')"
+      }
+    },
+
+    "Handle_Extraction_Failure": {
+      "type": "Compose",
+      "description": "Fires if either the AI Builder prompt call or the JSON parse fails — most commonly a scanned/non-OCR'd PDF the prompt could not read, or a malformed prompt response.",
+      "runAfter": {
+        "Extract_With_AI_Builder": ["Failed", "TimedOut"],
+        "Parse_Extraction_Result": ["Failed"]
+      },
+      "runtimeConfiguration": { "runAfterConfiguration": { "matchStrategy": "AtLeastOne" } },
+      "inputs": {
+        "status":            "error",
+        "errorMessage":      "@coalesce(actions('Extract_With_AI_Builder')?['error']?['message'], 'The document could not be read. It may be a scanned image without a text layer, or in an unsupported format.')",
+        "trackerFileUrl":    "@parameters('trackerFileUrl')",
+        "rowSummary":        "",
+        "missingFields":     [],
+        "needsManualReview": true,
+        "extractionNotes":   "Extraction failed — no row was added to the tracker."
+      }
+    }
+  },
+
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "aiBuilderPromptId": {
+      "defaultValue": "REPLACE_WITH_AI_BUILDER_PROMPT_GUID",
+      "type": "String",
+      "description": "GUID of the 'Appraisal Review Field Extraction' AI Builder Prompt, created once per environment (see DEPLOYMENT.md)."
+    },
+    "trackerDriveId": {
+      "defaultValue": "REPLACE_WITH_SHAREPOINT_DRIVE_ID",
+      "type": "String",
+      "description": "Drive (document library) ID that holds the single shared tracker workbook."
+    },
+    "trackerFileId": {
+      "defaultValue": "REPLACE_WITH_TRACKER_WORKBOOK_FILE_ID",
+      "type": "String",
+      "description": "File ID of the tracker workbook provisioned once from templates/Appraisal-Review-Tracker-Template.xlsx."
+    },
+    "trackerFileUrl": {
+      "defaultValue": "REPLACE_WITH_TRACKER_SHARING_LINK",
+      "type": "String",
+      "description": "Static sharing link to the tracker workbook, generated once at setup time and reused on every run (see costNotes above)."
+    }
+  }
+}
