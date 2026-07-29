@@ -1,5 +1,5 @@
 // Office Script for the Excel Online (Business) "Run script" action in
-// Shared-AppraisalPdfToExcel. Add this to the tracker template file via
+// Shared-AppraisalCellWriter. Add this to the tracker template file via
 // Excel Online > Automate > New Script, paste this file's contents, save it
 // as "PopulateAppraisalReviewCells", then select it in the flow's Run Script
 // action (see DEPLOYMENT.md, Appraisal PDF-to-Excel Extractor Deployment).

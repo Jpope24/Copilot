@@ -5,7 +5,7 @@
 >    (template/destination location, reviewer routing, cost guardrails).
 > 2. **Fixed Requirements** below the horizontal rule — keep these identical
 >    across environments so the output JSON contract matches what
->    `Shared-AppraisalPdfToExcel` expects.
+>    `Shared-AppraisalCellWriter` expects.
 >
 > To deploy: copy this file, fill in the Deployment Configuration section,
 > paste the result into the **Instructions** field of the Copilot Studio
@@ -24,10 +24,13 @@
 
 **Purpose**: Reads a commercial real estate appraisal review PDF attached in a
 Microsoft Teams chat or channel, extracts a fixed set of credit-risk data
-points, and hands them to `Shared-AppraisalPdfToExcel`, which copies the
-bank's own appraisal review template to a new workbook, writes the extracted
-values into that workbook's named cells (sheet `RE Collateral`), and returns
-a link to the new file.
+points **itself, in-conversation**, then hands only the finished values to
+`Shared-AppraisalCellWriter`, which copies the bank's own appraisal review
+template to a new workbook, writes the extracted values into that workbook's
+named cells (sheet `RE Collateral`), and returns a link to the new file.
+`Shared-AppraisalCellWriter` has no extraction logic and no AI Builder
+connector — it only writes cells. See "How This Agent Is Invoked" below for
+where the extraction call actually lives.
 
 ### Requestor Context
 
@@ -37,7 +40,7 @@ email automatically from `System.User` and passes them to the flow.
 
 ### Template & Destination Location
 
-`Shared-AppraisalPdfToExcel` does not ship a template — it copies **your**
+`Shared-AppraisalCellWriter` does not ship a template — it copies **your**
 team's existing appraisal review template (the one with `F23`–`F32` and
 `I21`–`I28` on sheet `RE Collateral`) and saves the populated copy to a
 location you designate. Both are flow-level parameters
@@ -49,18 +52,18 @@ this agent.
 
 ### Cost Guardrails
 
-These limits keep AI Builder consumption predictable. Adjust only if your
-team's AI Builder capacity and typical appraisal document length justify a
-change.
+These limits keep generative consumption predictable. Adjust only if your
+team's Copilot Studio capacity and typical appraisal document length justify
+a change.
 
 - **Max file size**: 15 MB. Larger files are rejected before extraction is
-  attempted (protects against runaway AI Builder credit consumption on
-  scanned, non-OCR'd, or oversized PDFs).
+  attempted (protects against runaway generative consumption on scanned,
+  non-OCR'd, or oversized PDFs).
 - **Max pages sent to extraction**: 40. Appraisal review PDFs are normally
   3–15 pages; a cap this size only blocks anomalous uploads.
-- **One extraction attempt per document.** Do not silently retry the AI
-  Builder prompt on partial failure — surface the error to the user instead.
-  Retries double the credit cost for a run that is likely to fail again.
+- **One extraction attempt per document.** Do not silently retry the inline
+  Prompt action on partial failure — surface the error to the user instead.
+  Retries double the cost for a run that is likely to fail again.
 
 ---
 
@@ -71,16 +74,26 @@ risk analyst attaches an appraisal review PDF and sends it to the bot — either
 directly or by @mentioning the bot in a shared channel. The topic:
 
 1. Confirms the attachment is a PDF and within the size/page guardrails above.
-2. Calls the `Shared-AppraisalPdfToExcel` Power Automate flow, passing the
-   file content, filename, and the requesting user's name/email.
-3. The flow performs extraction (via an AI Builder prompt, not a separately
-   provisioned Azure AI resource — this keeps the tool inside the team's
-   existing Power Platform/Copilot licensing rather than adding a new billed
-   Azure service), copies the designated template to a new, uniquely named
-   workbook, writes the extracted values into that workbook's named cells,
-   and returns a link to the new file plus the extracted data for
-   confirmation.
-4. The agent replies in the same Teams conversation with a summary of what
+2. Extracts the 17 fields **itself**, via an inline Prompt action configured
+   directly on the topic step (`agent/appraisal-agent-topic.yaml`,
+   `extractFieldsInline`) — not a separately published AI Builder catalog
+   Prompt, and not a call the companion flow makes. This is still a
+   generative/LLM call under the hood (Copilot Studio's inline Prompt action
+   runs on the same model infrastructure AI Builder Prompts use), so it is
+   not free — it is billed as Copilot Studio generative/message consumption
+   rather than AI Builder credits. What this design avoids is a separately
+   managed AI Builder resource and any AI Builder connector call inside the
+   flow, not the underlying cost of reading the PDF.
+3. Parses and validates the model's JSON response in-conversation (Power Fx
+   `ParseJSON`), coalescing any missing field to `"Not Stated"` before
+   proceeding — no partially-extracted data is ever sent to the flow.
+4. Calls the `Shared-AppraisalCellWriter` Power Automate flow, passing only
+   the finished, already-extracted values plus the requesting user's
+   name/email — never the PDF itself, and never a call the flow could use to
+   re-run extraction. The flow copies the designated template to a new,
+   uniquely named workbook, writes the values into that workbook's named
+   cells, and returns a link to the new file.
+5. The agent replies in the same Teams conversation with a summary of what
    was extracted, a flag for any fields it could not find, and the link to
    the new workbook.
 
@@ -132,10 +145,14 @@ itself; reviewer name and review date come from the review memo/sign-off.
 
 ## Output Requirements
 
-Return extraction results in exactly this JSON structure. The calling flow
-depends on this schema to populate the new workbook's cells (the JSON key →
-cell mapping lives in `flows/Shared-AppraisalPdfToExcel.json` →
-`_meta.cellMap`, and in the Office Script `flows/scripts/PopulateAppraisalReviewCells.ts`).
+Return extraction results in exactly this JSON structure. This topic's own
+`ParseJSON` step, and ultimately the new workbook's cells, depend on this
+schema (the JSON key → cell mapping lives in
+`flows/Shared-AppraisalCellWriter.json` → `_meta.cellMap`, and in the Office
+Script `flows/scripts/PopulateAppraisalReviewCells.ts`) — this response
+format must be pasted into the inline Prompt action's **Response format**
+setting exactly as shown, or the topic's parsing step will fail closed
+(see `checkParsedOk` in `agent/appraisal-agent-topic.yaml`).
 
 ```json
 {
