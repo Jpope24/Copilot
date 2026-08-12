@@ -214,41 +214,186 @@ You'll paste these values into the flow's parameters in Part E.
 
 This is the extraction engine, and it lives entirely inside the Copilot
 Studio topic — there is no separate AI Builder catalog object to create,
-publish, or version for this tool. You'll do this while building the topic
-in Part F; this section explains what that one step needs so Part F can
-stay a checklist.
+publish, or version for this tool. Do this from inside the topic canvas
+you'll create in Part C step 1 — build Part C steps 1–3 first (create the
+topic, declare its inputs/outputs, clear the default trigger scaffolding),
+then come back here for the topic's first real action, then continue with
+Part C step 4 onward.
 
-1. In the topic's action list (see `agent/appraisal-agent-topic.yaml`,
-   step `extractFieldsInline`), add an action via **Add an action → AI
-   Builder → Prompt** (the picker offers both "Use an existing prompt" and
-   "Create a new prompt inline" — choose **inline**, not a saved catalog
-   prompt).
-2. Under **Model**, choose a GPT-class model available in your tenant's
-   Prompt picker (prefer a lower-cost/mini tier if your tenant offers one —
-   extraction is a well-structured task and does not need the largest
-   model).
-3. Add an **input variable** bound to this topic's declared `document`
-   input (see Part C):
+1. In the topic canvas, click the **+** below the topic's start node →
+   **Add an action** → search **"AI Builder"** → select the **Prompt**
+   action (some tenants label it **"Predict"** or **"Run a prompt"** — any
+   of these names refer to the same AI Builder Prompt action).
+2. The configuration pane that opens offers a choice between an existing
+   saved prompt and creating one on the spot — choose **Create a prompt**
+   (sometimes phrased "Create a new prompt" or shown as a blank prompt
+   editor by default). This keeps the prompt inline on this action instead
+   of creating a separate AI Builder catalog object.
+3. **Model**: pick a GPT-class model from the dropdown — prefer a
+   lower-cost/mini tier if your tenant's list offers one (e.g. a "mini" or
+   "small" variant); extraction from a well-structured document doesn't
+   need your largest available model.
+4. **Add the file input.** Look for an **"Add data"**, **"Insert data"**,
+   or **{ }** button near the instructions box — this is how you declare a
+   named input the prompt can reference inline. Add:
    - Name: `document`
    - Type: **File**
-4. In the instructions box, paste the **Extraction Requirements** and
-   **Output Requirements** sections from
-   [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)
-   (from "## Extraction Requirements" through the end of "## Output
-   Requirements"), then reference the file input at the top: `Extract data
-   from this appraisal review document: {document}`.
-5. Set **Response format** to **JSON** and paste the same JSON schema shown
-   in the "Output Requirements" example so the model's output is
-   constrained to that shape.
-6. Bind the action's output to a topic variable — `topic.extractionRawJson`
-   — matching what the next step (`parseExtraction`, a `ParseJSON()` Power
-   Fx expression) expects.
-7. Click **Test** in the topic's test pane, upload a sample appraisal
-   review PDF, and confirm the response is valid JSON matching the
-   17-field schema before moving on.
-8. There is nothing to publish separately here — saving and publishing the
-   agent (Part F) publishes this action along with everything else in the
-   topic.
+
+   This input will later be bound to the topic's own `document` input
+   (declared in Part C step 2) when you wire up this action's dynamic
+   value — for now just declare it so it exists as a `{document}` token you
+   can drop into the instructions text.
+
+5. **Instructions box** — clear any placeholder text and paste the block
+   below exactly (do not paraphrase; the flow's `Parse_Agent_Response`
+   step and this topic's own `ParseJSON` call both depend on these literal
+   JSON key names):
+
+   ```
+   Extract data from this appraisal review document: {document}
+
+   Extract exactly these 17 fields from the appraisal review PDF. Read the
+   appraisal report and the appraisal review section/memo if both are
+   present — occupancy, address, and valuation figures come from the
+   appraisal itself; reviewer name and review date come from the review
+   memo/sign-off.
+
+   1. Primary occupancy type -> occupancyType (string) — e.g. "Multifamily",
+      "Retail — Anchored Center", "Industrial — Warehouse/Distribution"
+   2. Location (city, state) -> city, state (two separate strings). Use
+      USPS 2-letter state code.
+   3. Street address -> streetAddress (string) — street number and name
+      only; city/state/zip are captured separately.
+   4. Collateral analysis value -> collateralAnalysisValue (number, no
+      currency symbol or commas) — the value the bank relies on for
+      collateral purposes, usually the reconciled/final opinion of value.
+   5. Valuation type -> valuationType (string) — the value premise and
+      approach reported, e.g. "As-Is Market Value — Income Capitalization
+      Approach"
+   6. Appraiser name(s) -> appraiserNames (array of strings) — include all
+      signing appraisers (e.g. staff + supervisory/certified appraiser).
+   7. Date of appraisal -> appraisalDate (string, YYYY-MM-DD) — effective
+      date of value.
+   8. Name of appraisal reviewer -> reviewerName (string) — the bank's or
+      third-party review appraiser, not the original appraiser.
+   9. Date of the review -> reviewDate (string, YYYY-MM-DD)
+   10. Gross building area (sq ft) -> grossBuildingAreaSqFt (number)
+   11. Net rentable area (sq ft) -> netRentableAreaSqFt (number). If the
+       property type has no NRA concept (e.g. single-tenant industrial
+       reported only as GBA), repeat the GBA value and note it in
+       extractionNotes.
+   12. Number of buildings -> numberOfBuildings (integer)
+   13. Year built or remodeled -> yearBuiltOrRemodeled (4-digit year). If
+       both exist, use the most recent (remodel) year and note the
+       original year in extractionNotes.
+   14. Remaining economic life (years) -> remainingEconomicLifeYears
+       (integer)
+   15. General condition -> generalCondition (string) — e.g. "Average",
+       "Good", "Fair"; use the appraiser's own rating term.
+   16. Market exposure time -> marketExposureTime (string, as stated, e.g.
+       "6-12 months")
+   17. Meets highest and best use per appraisal -> meetsHighestAndBestUse —
+       one of "Yes", "No", "Not Stated"
+
+   Handling missing or ambiguous data:
+   - If a field is genuinely not present in the document, set its value to
+     the string "Not Stated" (or null for numeric fields) — never guess or
+     fabricate a number.
+   - Every field you could not confidently extract goes in the
+     missingFields array (using its JSON key) and sets needsManualReview to
+     true.
+   - Do not average, estimate, or infer numeric values (e.g. do not compute
+     GBA from a per-unit figure) — extract only what the document states
+     directly.
+
+   Extraction standards:
+   - Read the full document before extracting — figures for the same field
+     sometimes appear in more than one place (e.g. a summary page and the
+     detailed narrative); prefer the detailed narrative/reconciliation
+     section when they conflict, and note the conflict in extractionNotes.
+   - Preserve the appraiser's own terminology for occupancyType,
+     generalCondition, and valuationType rather than normalizing to a house
+     taxonomy.
+   - Currency and area figures must be plain numbers (no $, no commas, no
+     "sq ft" suffix).
+   - Never fabricate a reviewer name or review date if the document
+     contains only the original appraisal with no separate review
+     sign-off — set both to "Not Stated" and add "reviewerName" /
+     "reviewDate" to missingFields.
+
+   Return your answer as a single JSON object with exactly these keys:
+   occupancyType, city, state, streetAddress, collateralAnalysisValue,
+   valuationType, appraiserNames, appraisalDate, reviewerName, reviewDate,
+   grossBuildingAreaSqFt, netRentableAreaSqFt, numberOfBuildings,
+   yearBuiltOrRemodeled, remainingEconomicLifeYears, generalCondition,
+   marketExposureTime, meetsHighestAndBestUse, missingFields,
+   needsManualReview, extractionNotes.
+   - missingFields: array of JSON keys from the list above that could not
+     be extracted. Empty array if everything was found.
+   - needsManualReview: true if missingFields is non-empty, OR if the
+     document did not clearly separate "appraisal" from "appraisal review"
+     content, OR if you extracted a value you are not confident in.
+   - extractionNotes: short plain-text note for anything an analyst should
+     double-check (max ~2 sentences). Empty string if nothing to flag.
+   ```
+
+6. **Response format**: find the toggle/dropdown below the instructions box
+   (often labeled **Response format** or **Output type**) and switch it
+   from **Free text** to **JSON**. A schema editor should appear — paste
+   this schema exactly:
+
+   ```json
+   {
+     "type": "object",
+     "properties": {
+       "occupancyType":              { "type": "string" },
+       "city":                       { "type": "string" },
+       "state":                      { "type": "string" },
+       "streetAddress":              { "type": "string" },
+       "collateralAnalysisValue":    { "type": ["number", "null"] },
+       "valuationType":              { "type": "string" },
+       "appraiserNames":             { "type": "array", "items": { "type": "string" } },
+       "appraisalDate":              { "type": "string" },
+       "reviewerName":               { "type": "string" },
+       "reviewDate":                 { "type": "string" },
+       "grossBuildingAreaSqFt":      { "type": ["number", "null"] },
+       "netRentableAreaSqFt":        { "type": ["number", "null"] },
+       "numberOfBuildings":          { "type": ["integer", "null"] },
+       "yearBuiltOrRemodeled":       { "type": ["integer", "string", "null"] },
+       "remainingEconomicLifeYears": { "type": ["integer", "null"] },
+       "generalCondition":           { "type": "string" },
+       "marketExposureTime":         { "type": "string" },
+       "meetsHighestAndBestUse":     { "type": "string" },
+       "missingFields":              { "type": "array", "items": { "type": "string" } },
+       "needsManualReview":          { "type": "boolean" },
+       "extractionNotes":            { "type": "string" }
+     }
+   }
+   ```
+
+   If your tenant's schema editor only accepts a flat example payload
+   rather than a JSON Schema document, paste the example JSON from
+   `agent/appraisal-agent-instructions.md` → "Output Requirements" instead —
+   most versions accept either and infer the shape.
+
+7. **Name the action's output variable.** Find the output binding at the
+   bottom of the configuration pane (often auto-named something like
+   `TextResponse` or `Predict_Prompt_output`) and rename it, or note its
+   exact generated name — you'll reference it in Part C step 4 as
+   whatever variable holds the Prompt's raw JSON string. The reference
+   design (`agent/appraisal-agent-topic.yaml`) calls this
+   `topic.extractionRawJson`.
+8. Click **Save** on the action.
+9. Test this specific action before wiring up the rest of the topic:
+   right-click the topic in the **Topics** list → **Test** (chat-style
+   testing depends on trigger phrases this topic doesn't have, so use
+   whatever direct-test option your designer offers instead of the normal
+   chat pane), supply a sample PDF for the `document` input, and confirm
+   the response is valid JSON matching the schema above before continuing
+   to Part C step 4.
+10. There is nothing to publish separately for this action — saving and
+    publishing the agent (Part F) publishes it along with everything else
+    in the topic.
 
 ---
 
@@ -262,32 +407,74 @@ Verify each step against your tenant's actual designer; the YAML file is a
 best-effort reference, not something guaranteed to round-trip through the
 YAML editor unmodified.
 
-1. Create the topic (**Topics** → **Add a topic** → **Create from blank**),
-   name it `Extract Appraisal Fields` (this exact name is what
-   `extractionTopicName` in the flow's parameters must match).
-2. In the topic's **Settings** panel, look for an **Inputs**/**Outputs**
-   section (sometimes surfaced as "Variables" with an "Input"/"Output"
-   scope toggle, depending on your Copilot Studio version). Add:
-   - Input `document`, type **File**
-   - Output `extractionJson`, type **String**
-   - Output `parseSucceeded`, type **Boolean**
-3. Remove or skip any conversational entry scaffolding the blank-topic
-   template pre-populates (trigger phrases, a default greeting) — this
-   topic is never matched by user input, so none of that applies. If your
-   designer requires *some* trigger configuration to save the topic, set it
-   to the least permissive/most inert option available rather than adding
-   real trigger phrases, since a stray trigger phrase would make this
-   callable topic also reachable by an ordinary chat message.
-4. Build the three actions from `agent/appraisal-agent-topic.yaml` in
-   order: the inline Prompt action (Part B), the `ParseJSON()` Power Fx
-   variable assignment, and a `Not(IsError(...))` assignment for
-   `parseSucceeded`. End the topic by returning both outputs — look for an
-   "End the topic and return a value" / "Respond with outputs" option on
-   the topic's final step, rather than `SendActivity` (there is nothing to
-   send activity into).
-5. Confirm the topic does **not** appear in whatever "topics available in
-   conversation" list your designer shows for the agent's default
-   orchestration — it should only be reachable as a callable action.
+1. From the agent's **Topics** page, click **+ Add a topic** → **Create
+   from blank**. Name it exactly `Extract Appraisal Fields` (this exact
+   string is what `extractionTopicName` in the flow's parameters, Part E,
+   must match).
+2. Open the topic's **Settings** — the gear icon in the canvas toolbar, or
+   **···** on the topic's entry in the Topics list → **Settings**. Look
+   for a section governing whether this topic can be **called by other
+   topics, agents, or Power Automate** (phrasing varies by version — look
+   for "Inputs and outputs," "Callable," or a toggle near "Availability").
+   Turn it on, then add:
+   - **Input**: name `document`, type **File**
+   - **Output**: name `extractionJson`, type **Text** (or **String**)
+   - **Output**: name `parseSucceeded`, type **Yes/No** (or **Boolean**)
+
+   If you can't find this section at all, search your tenant's Copilot
+   Studio documentation for "topic inputs and outputs" or "reusable
+   topics" — this capability's exact menu location has moved between
+   Copilot Studio releases.
+3. Back in the canvas, the blank-topic template usually pre-populates a
+   **Trigger** node expecting phrases, and sometimes a greeting
+   **Send a message** node. Delete the greeting node. For the Trigger
+   node: leave its phrase list empty if the designer allows saving that
+   way; if it insists on at least one phrase, enter something no live user
+   would plausibly type (e.g. a GUID-like string) purely to satisfy
+   validation, and treat that as a workaround, not a real entry point —
+   the actual invocation always comes from Power Automate, never from a
+   phrase match. Re-check step 2's "callable" toggle — turning it on is
+   often what suppresses the phrase requirement entirely, so try that
+   first before resorting to a placeholder phrase.
+4. Add the Prompt action from **Part B** as the topic's first real step.
+   When binding its `document` input (Part B step 4), use the dynamic
+   values / **{ }** picker and look for the topic's own declared input —
+   typically shown as `Topic.document` or listed under a "Topic inputs"
+   category in the picker. If it doesn't appear automatically, save the
+   topic's Settings (step 2) first, then reopen the Prompt action — the
+   input sometimes only appears in pickers after the topic-level input is
+   saved.
+5. Add a **Set a variable value** action (Power Fx) directly after the
+   Prompt action:
+   - Variable: create new, name `extraction`.
+   - Value (formula bar): `ParseJSON(Topic.extractionRawJson)` — replace
+     `extractionRawJson` with whatever you actually named the Prompt
+     action's output variable in Part B step 7.
+6. Add a second **Set a variable value** action, targeting the
+   `parseSucceeded` **output** variable you declared in step 2 (it should
+   appear as an existing, settable variable — outputs behave like normal
+   topic variables once declared):
+   - Value (formula bar): `Not(IsError(Topic.extraction))`
+7. Add a third **Set a variable value** action, targeting the
+   `extractionJson` **output** variable:
+   - Value (formula bar): `Topic.extractionRawJson`
+
+   (Steps 6–7 can sometimes be combined into whatever "return a value" node
+   your designer offers at the very end of the topic instead of separate
+   Set Variable actions — if your canvas has an explicit **"End the
+   topic"** node with fields for each declared output, set both outputs
+   there directly instead of adding steps 6–7 as their own actions.)
+8. End the topic. Look for **"End the topic"**, **"End and return a
+   value,"** or similar as the final node — this is what actually sends
+   `extractionJson` and `parseSucceeded` back to the calling flow. Do
+   **not** use a `SendActivity` / "Send a message" node anywhere in this
+   topic — there is no conversation for it to send into, and doing so is
+   harmless but meaningless in this invocation model.
+9. Save the topic. Confirm it does **not** appear in whatever "topics
+   available in conversation" or "suggested topics" list your designer
+   shows elsewhere for this agent's default orchestration — it should only
+   be reachable as a callable action, not something a real chat user could
+   stumble into.
 
 ---
 
@@ -417,26 +604,64 @@ upload.
 
 ## Part F — Publish the agent
 
-1. Go to [copilotstudio.microsoft.com](https://copilotstudio.microsoft.com),
-   same environment as Parts A–E.
-2. **Create** → **New agent** → **Skip to configure**.
-3. Name: `Appraisal Review Extractor`. Description: *"Callable extraction
-   topic for appraisal review PDFs — invoked by
-   Shared-AppraisalReviewOrchestrator, not a conversational agent."*
-4. **Instructions**: paste the full contents of
-   `agent/appraisal-agent-instructions.md`.
-5. Build the `Extract Appraisal Fields` topic per **Part C** and **Part B**.
-6. **Settings** (gear icon) → **Advanced** → note the agent's **Bot ID** —
-   this is `appraisalAgentId` in the flow's parameters (Part E).
-7. **Publish** the agent. You do **not** need to enable the Teams channel
-   for this agent in this design — nothing chats with it directly. If you
-   want a fallback path to manually test the topic via chat during
-   development, enabling Teams for testing purposes is fine, but it is not
-   part of the production invocation path.
-8. Back in **Shared-AppraisalReviewOrchestrator** (Part E), open the "Run a
+This is the checklist that ties Parts B and C together and gets the agent
+into a state Power Automate can actually call. Do the sub-steps in order.
+
+1. Go to [copilotstudio.microsoft.com](https://copilotstudio.microsoft.com).
+   Confirm the environment picker (top of the page, or under your profile
+   icon) is set to the **same Power Platform environment** you used for
+   Parts A, D, and E — a Copilot Studio agent created in the wrong
+   environment won't be selectable from the flow's "Run a topic" action
+   later.
+2. Click **Agents** in the left nav (or **Create** on some tenants) → **New
+   agent**. You'll be offered a conversational setup ("describe what you
+   want your agent to do") — click **Skip to configure** to go straight to
+   a blank agent instead, since you're pasting fixed instructions rather
+   than having Copilot Studio draft them.
+3. On the configuration page:
+   - **Name**: `Appraisal Review Extractor`
+   - **Description**: `Callable extraction topic for appraisal review PDFs — invoked by Shared-AppraisalReviewOrchestrator, not a conversational agent.`
+4. Find the **Instructions** field — usually on the same configuration
+   page under a heading like "Instructions" or "Additional instructions,"
+   sometimes under **Settings → Generative AI** instead depending on your
+   tenant's Copilot Studio version. Paste the **full contents** of
+   [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)
+   — the whole file, not just an excerpt; the extraction spec later gets
+   pasted a second time into the Prompt action itself (Part B step 5), but
+   the agent-level Instructions field is still worth having the complete
+   file for context and maintainability.
+5. Click **Create** (or **Save**) to actually create the agent shell before
+   moving to topics — some designers won't let you add topics until the
+   agent has been saved once.
+6. Go to the **Topics** tab and build `Extract Appraisal Fields` following
+   **Part C** (topic creation, inputs/outputs, trigger cleanup) and
+   **Part B** (the inline Prompt action) in the order those two sections
+   describe — Part C step 4 is where you drop into Part B.
+7. **Find the agent's identifier for the flow.** Look under **Settings**
+   (gear icon) → **Advanced** — depending on version this is labeled
+   **Metadata** or shows fields like **Schema name** and/or **Bot ID**
+   directly. Note whichever identifier is shown; you'll want it as a
+   fallback for `appraisalAgentId` in Part E. In practice, you may not need
+   to copy this by hand at all: when you configure the flow's "Run a
+   topic" action in Part E, its **Bot** field is usually a searchable
+   dropdown listing agents by display name (`Appraisal Review Extractor`)
+   rather than requiring you to paste a raw ID — try the picker first, and
+   only fall back to manually entering an ID if the picker doesn't resolve
+   your agent.
+8. **Publish** the agent (top-right **Publish** button, then confirm). You
+   do **not** need to enable the Teams channel for this agent in this
+   design — nothing chats with it directly, so skipping **Channels →
+   Microsoft Teams** entirely is fine. If you want a fallback path to
+   manually test the topic via chat during development, enabling Teams for
+   testing purposes doesn't hurt, but it is not part of the production
+   invocation path and analysts should never be told to message this
+   agent directly.
+9. Back in **Shared-AppraisalReviewOrchestrator** (Part E), open the "Run a
    topic" action and confirm it now resolves the published bot and topic
-   correctly in the picker (some connector versions require the agent to
-   be published before it appears as a selectable target).
+   correctly in the picker — some connector versions cache the agent/topic
+   list and require the agent to be published (not just saved) before it
+   appears as a selectable target, so revisit this action after step 8
+   even if you configured it earlier.
 
 ---
 
