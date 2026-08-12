@@ -1,0 +1,55 @@
+kind: AdaptiveDialog
+modelDescription: >
+  DISPOSABLE PROOF-OF-CONCEPT — not part of the production Appraisal Review
+  Extractor. Build this on its own throwaway agent (see POC.md), not on the
+  real "Appraisal Review Extractor" agent, so nothing here risks the
+  production build.
+
+  Exists to answer two open questions before the production topic is
+  rebuilt around "Execute Agent" / "Execute Agent and wait":
+
+  1. Can a file attached via that action's advanced "attachments" parameter
+     actually be read inside a topic — and does a Question node with entity
+     Attachment auto-resolve from the triggering activity (since Execute
+     Agent is a single-shot call, not a back-and-forth conversation), or is
+     a different mechanism needed (e.g. a system attachments value)?
+  2. Does this topic's reply text actually surface in the calling flow's
+     Execute Agent and wait output the way early research suggested
+     (a `lastResponse` field), or is the real field/shape different?
+
+  Delete this topic (and its throwaway agent, and Poc-ExecuteAgentAttachmentTest)
+  once both questions are answered. Nothing here should be treated as a
+  template to extend — it deliberately does the least possible to get an
+  answer.
+
+triggers:
+  - kind: OnRecognizedIntent
+    id: main
+    intent:
+      displayName: PoC Echo Attachment
+      triggerQueries:
+        - poc echo attachment
+    actions:
+
+      # If the attachment sent via Execute Agent's advanced parameters
+      # already satisfies this Question node without the topic actually
+      # re-prompting, topic.TestFile will be populated on the very first
+      # (and only) turn. If instead the flow's result shows this prompt
+      # text came back as the reply, that's itself the finding: it means
+      # attachments don't arrive the way this Question node expects them,
+      # and the production topic will need to read the file a different
+      # way (e.g. a system Activity/Attachments value) instead of a
+      # Question node.
+      - kind: Question
+        id: askForFile
+        variable: topic.TestFile
+        entity: Attachment
+        prompt: >
+          NO_ATTACHMENT_AUTO_RESOLVED — if this exact string comes back as
+          the flow's result, the Question node had to ask instead of
+          finding an attachment already present on the triggering message.
+
+      - kind: SendActivity
+        id: echoResult
+        activity: >
+          {"attachmentReceived": ${!IsBlank(topic.TestFile)}, "fileName": "${If(IsBlank(topic.TestFile), "none", topic.TestFile.name)}", "fileSizeBytes": ${If(IsBlank(topic.TestFile), 0, topic.TestFile.size)}}

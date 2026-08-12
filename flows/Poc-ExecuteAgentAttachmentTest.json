@@ -1,0 +1,124 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "_meta": {
+    "flowName": "Poc-ExecuteAgentAttachmentTest",
+    "description": "DISPOSABLE proof-of-concept flow. Confirms two things before the production Appraisal Review Extractor flow/topic are rebuilt around Execute Agent: (1) whether a file attached via Execute Agent's advanced 'attachments' parameter can actually be read inside a Copilot Studio topic, and (2) the real shape of Execute Agent and wait's response — is there really a 'lastResponse' field, does it need json() to parse, what else is on the response body. This flow deliberately surfaces the RAW response alongside the assumed parse, so a single test run answers the question even if the 'lastResponse' assumption turns out wrong. Delete this flow, agent/poc-attachment-echo-topic.yaml, and the throwaway PoC agent once both questions are answered.",
+    "version": "poc-1",
+    "connectors": [
+      "Microsoft Copilot Studio (shared_CopilotStudio or your tenant's equivalent connector id) — Execute Agent and wait, against a THROWAWAY PoC agent, not the production one",
+      "Microsoft Teams (shared_teams) — Post message in a channel, purely so the result is easy to eyeball without opening run history"
+    ],
+    "buildNote": "Build the 'Execute Agent and wait' action from the live connector picker in Power Automate, not by pasting this file's 'actions.Execute_Agent_And_Wait' block — the exact operation path/schema for this action is not something this repo has verified against a real tenant yet; that is the entire point of this PoC. See POC.md for the build steps and what each possible outcome means."
+  },
+
+  "trigger": {
+    "type": "Request",
+    "kind": "Button",
+    "description": "'Manually trigger a flow' with a File-type input, same mechanism the production design uses — reusing it here also incidentally re-confirms the Teams file-upload-to-flow path still works.",
+    "inputs": {
+      "schema": {
+        "type": "object",
+        "required": ["testFile", "testFileFileName"],
+        "properties": {
+          "testFile":         { "type": "string", "format": "byte" },
+          "testFileFileName": { "type": "string" }
+        }
+      }
+    }
+  },
+
+  "actions": {
+
+    "Build_Data_Uri": {
+      "type": "Compose",
+      "description": "Bot Framework Attachment objects commonly reference inline content via a contentUrl data URI — this is a best guess at the format Execute Agent's attachments parameter expects, based on secondhand blog descriptions, not verified first-party docs. If the live designer's 'attachments' field wants something else (e.g. raw contentBytes instead of a data URI), build it that way instead and treat this Compose as wrong.",
+      "runAfter": {},
+      "inputs": "@concat('data:application/pdf;base64,', triggerBody()?['testFile'])"
+    },
+
+    "Execute_Agent_And_Wait": {
+      "type": "ApiConnection",
+      "description": "PLACEHOLDER — build this action from the connector picker: search 'Copilot Studio' > 'Execute Agent and wait'. Point it at the throwaway PoC agent (not production). Message/body: the literal text 'poc echo attachment' (must match the PoC topic's trigger phrase exactly). Under Advanced parameters, find the attachments field and supply one attachment: name = testFileFileName, contentType = application/pdf, contentUrl/content = the output of Build_Data_Uri. The 'path' below is not a real, verified operation id — do not paste this action, build it live.",
+      "runAfter": { "Build_Data_Uri": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']" }
+        },
+        "method": "post",
+        "path": "UNVERIFIED_BUILD_FROM_DESIGNER_PICKER",
+        "body": {
+          "message": "poc echo attachment",
+          "attachments": [
+            {
+              "name": "@triggerBody()?['testFileFileName']",
+              "contentType": "application/pdf",
+              "contentUrl": "@outputs('Build_Data_Uri')"
+            }
+          ]
+        }
+      }
+    },
+
+    "Compose_Raw_Response": {
+      "type": "Compose",
+      "description": "The whole, unmodified response body from Execute Agent and wait — inspect this first. It tells you the real field names regardless of whether the 'lastResponse' assumption below is right.",
+      "runAfter": { "Execute_Agent_And_Wait": ["Succeeded"] },
+      "inputs": "@body('Execute_Agent_And_Wait')"
+    },
+
+    "Attempt_Parse_LastResponse": {
+      "type": "Compose",
+      "description": "Best-effort attempt at the pattern found in secondhand research: json(body(...)?['lastResponse']). If this action fails in run history, that itself is informative — it means either the field isn't called lastResponse, or its content wasn't valid JSON text. Check Compose_Raw_Response's output in that case rather than trying to fix this expression blindly.",
+      "runAfter": { "Compose_Raw_Response": ["Succeeded"] },
+      "inputs": "@json(body('Execute_Agent_And_Wait')?['lastResponse'])"
+    },
+
+    "Post_Raw_Result_To_Teams": {
+      "type": "ApiConnection",
+      "description": "Always posts the raw response — this alone is enough to answer question 2 (the real field names/shape), regardless of whether the lastResponse parse attempt below succeeds.",
+      "runAfter": { "Compose_Raw_Response": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/v3/beta/teams/conversation/message",
+        "body": {
+          "poster": "Flow bot",
+          "location": "@parameters('notificationChannelId')",
+          "body": "@concat('PoC raw Execute Agent response: ', string(outputs('Compose_Raw_Response')))"
+        }
+      }
+    },
+
+    "Post_Parsed_Result_To_Teams": {
+      "type": "ApiConnection",
+      "description": "Separate, independent post — only fires if Attempt_Parse_LastResponse actually succeeded. If this message never arrives but Post_Raw_Result_To_Teams's does, that itself is the finding: 'lastResponse' isn't the real field, or its content isn't valid JSON text. Check the raw response message for the actual field name to use instead.",
+      "runAfter": { "Attempt_Parse_LastResponse": ["Succeeded"] },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/v3/beta/teams/conversation/message",
+        "body": {
+          "poster": "Flow bot",
+          "location": "@parameters('notificationChannelId')",
+          "body": "@concat('PoC parsed lastResponse: ', string(outputs('Attempt_Parse_LastResponse')))"
+        }
+      }
+    }
+  },
+
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "notificationChannelId": {
+      "defaultValue": "REPLACE_WITH_A_TEST_TEAMS_CHANNEL_ID",
+      "type": "String",
+      "description": "Any channel you can post test results to — does not need to be the real credit risk channel."
+    }
+  }
+}
