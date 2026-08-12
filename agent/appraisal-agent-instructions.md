@@ -7,9 +7,15 @@
 >    across environments so the output JSON contract matches what
 >    `Shared-AppraisalReviewOrchestrator` expects.
 >
-> To deploy: copy this file, fill in the Deployment Configuration section,
-> paste the result into the **Instructions** field of the Copilot Studio
-> agent, and publish.
+> **This file is not pasted into the Copilot Studio agent's Instructions
+> field.** That field has no functional effect in this design — the agent
+> never has a conversation, so nothing reads it at runtime. What actually
+> matters is the **Extraction Requirements** and **Output Requirements**
+> sections below: paste those verbatim into the inline Prompt action's own
+> instructions box, inside the callable topic (see DEPLOYMENT.md, Part B).
+> The rest of this file — everything above "How This Agent Is Invoked" — is
+> reference documentation for whoever deploys and maintains this tool, not
+> text to paste anywhere in the designer.
 
 ---
 

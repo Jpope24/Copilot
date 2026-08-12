@@ -624,12 +624,19 @@ into a state Power Automate can actually call. Do the sub-steps in order.
 4. Find the **Instructions** field — usually on the same configuration
    page under a heading like "Instructions" or "Additional instructions,"
    sometimes under **Settings → Generative AI** instead depending on your
-   tenant's Copilot Studio version. Paste the **full contents** of
-   [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)
-   — the whole file, not just an excerpt; the extraction spec later gets
-   pasted a second time into the Prompt action itself (Part B step 5), but
-   the agent-level Instructions field is still worth having the complete
-   file for context and maintainability.
+   tenant's Copilot Studio version. **This field has no functional effect
+   in this design** — it only shapes conversational routing/tone, and this
+   agent never has a conversation (no Teams channel is enabled for it; its
+   only topic is invoked directly by the flow, never matched from user
+   input). The extraction spec that actually matters gets pasted
+   separately into the Prompt action's own instructions box (Part B step
+   5), which is a distinct field entirely independent of this one. A short
+   description is enough here — something like: `Callable extraction
+   topic for appraisal review PDFs. Not conversational — invoked directly
+   by Shared-AppraisalReviewOrchestrator.` Pasting the full contents of
+   `agent/appraisal-agent-instructions.md` here is optional and purely for
+   a future maintainer's convenience if they open the agent later; skip it
+   if you'd rather keep the field short, since nothing at runtime reads it.
 5. Click **Create** (or **Save**) to actually create the agent shell before
    moving to topics — some designers won't let you add topics until the
    agent has been saved once.
