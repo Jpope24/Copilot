@@ -1,10 +1,11 @@
 # Deployment Guide — Appraisal Review Extractor
 
-**Audience:** bank credit risk team. **Trigger:** an appraisal review PDF
-dropped into a SharePoint intake library (which can be surfaced as a Teams
-channel Files tab). **Output:** a brand-new Excel workbook for that review —
-a copy of the bank's own appraisal review template with 17 cells populated —
-posted as a link to a Teams channel.
+**Audience:** bank credit risk team. **Trigger:** an analyst posts an
+appraisal review PDF as an attachment on a Teams channel message, then runs
+this workflow on that specific message via the Teams Workflows app.
+**Output:** a brand-new Excel workbook for that review — a copy of the
+bank's own appraisal review template with 17 cells populated — with a reply
+posted in the same message thread.
 
 > **Why the trigger looks like this.** The original version of this tool had
 > the Copilot Studio agent call a Power Automate flow directly, using
@@ -15,12 +16,16 @@ posted as a link to a Teams channel.
 > the flow's own connectors fixes it. This version inverts the direction: a
 > Power Automate flow is the entry point, and it calls *into* the agent's
 > extraction topic using a different connector (the Copilot Studio "Run a
-> topic" action). **Before deploying this version, confirm in your own
-> tenant's DLP policy that this second connector is not grouped with the
-> blocked one** — some tenants classify Copilot Studio's inbound and
-> outbound connectors together, in which case this inversion does not
-> actually route around the block, and you should fall back to a design that
-> avoids Copilot Studio-to-flow connectors in both directions instead.
+> topic" action). The flow itself is triggered directly from Microsoft
+> Teams — **"For a selected message,"** the standard Teams connector's
+> manual trigger, invoked from a message's context menu via the Teams
+> Workflows app — so the whole tool is initiated from inside Teams without
+> any bot conversation or SharePoint drop-folder in between. **Before
+> deploying, confirm in your own tenant's DLP policy that the Copilot
+> Studio "Run a topic" connector is not grouped with the blocked one** —
+> some tenants classify Copilot Studio's inbound and outbound connectors
+> together, in which case this design does not actually route around the
+> block.
 
 ## Table of Contents
 
@@ -28,13 +33,13 @@ posted as a link to a Teams channel.
 2. [What this tool does](#what-this-tool-does)
 3. [Why this design (cost rationale)](#why-this-design-cost-rationale)
 4. [Prerequisites](#prerequisites)
-5. [Part A — Designate template, destination, intake, and notification locations](#part-a--designate-template-destination-intake-and-notification-locations)
+5. [Part A — Designate template, destination, and Teams files locations](#part-a--designate-template-destination-and-teams-files-locations)
 6. [Part B — Add the inline extraction Prompt action to the topic](#part-b--add-the-inline-extraction-prompt-action-to-the-topic)
 7. [Part C — Configure the topic as a callable action](#part-c--configure-the-topic-as-a-callable-action)
 8. [Part D — Add the Office Script to your template](#part-d--add-the-office-script-to-your-template)
 9. [Part E — Build Shared-AppraisalReviewOrchestrator](#part-e--build-shared-appraisalrevieworchestrator)
 10. [Part F — Publish the agent](#part-f--publish-the-agent)
-11. [Part G — Connect the intake Files tab and Teams notifications](#part-g--connect-the-intake-files-tab-and-teams-notifications)
+11. [Part G — Make the workflow available in Teams](#part-g--make-the-workflow-available-in-teams)
 12. [Part H — Test end-to-end](#part-h--test-end-to-end)
 13. [Troubleshooting](#troubleshooting)
 
@@ -48,7 +53,7 @@ Copilot/
 │   ├── appraisal-agent-instructions.md   ← Appraisal Review Extractor system prompt
 │   └── appraisal-agent-topic.yaml        ← Callable extraction topic (OnInvokeTopic, no chat)
 ├── flows/
-│   ├── Shared-AppraisalReviewOrchestrator.json   ← Owns the whole run: trigger, calls the agent, writes cells, notifies Teams
+│   ├── Shared-AppraisalReviewOrchestrator.json   ← Teams-triggered: calls the agent, writes cells, replies in-thread
 │   └── scripts/
 │       └── PopulateAppraisalReviewCells.ts   ← Office Script run by the flow's "Run script" action
 └── DEPLOYMENT.md
@@ -56,40 +61,42 @@ Copilot/
 
 There is no `flows/packages/` directory and no template file shipped in
 this repo. `Shared-AppraisalReviewOrchestrator` references your bank's own
-template/destination/intake paths and Teams channel — values that only
-exist after you designate them in your own environment, so a portable
-`.zip` package can't pre-populate them (see Part A and Part E). The
-workbook this tool writes into is **your** existing appraisal review
-template, copied at runtime — not anything stored here.
+template/destination paths and the SharePoint site backing your Teams
+files — values that only exist after you designate them in your own
+environment, so a portable `.zip` package can't pre-populate them (see
+Part A and Part E). The workbook this tool writes into is **your** existing
+appraisal review template, copied at runtime — not anything stored here.
 
 ---
 
 ## What this tool does
 
-An analyst drops an appraisal review PDF into a designated SharePoint
-intake library — directly, or via a Teams channel Files tab pointed at the
-same library, so it still feels like "drop it in Teams." No bot
-conversation is involved in starting a run.
+An analyst posts a channel message in Teams with the appraisal review PDF
+attached, then selects **"···" (More actions) → Workflows → Run
+Appraisal Review Orchestrator** on that specific message. No bot
+conversation and no separate upload location — the trigger is a deliberate
+action on a message the analyst already posted.
 
-`Shared-AppraisalReviewOrchestrator` triggers on that file's arrival,
-checks it's a `.pdf` under 15 MB, and calls the **Appraisal Review
-Extractor** agent's callable extraction topic — passing the file content —
-via the Copilot Studio connector's "Run a topic" action. That topic
-**extracts the 17 credit-risk data points itself, inline** — via a Prompt
-action configured directly on the topic step, not a separately published
-AI Builder catalog Prompt (full list and JSON contract in
+`Shared-AppraisalReviewOrchestrator` receives that message (and its
+attachment) as the trigger payload, checks it has exactly one `.pdf`
+attachment under 15 MB, and — only if valid — calls the **Appraisal Review
+Extractor** agent's callable extraction topic, passing the file content, via
+the Copilot Studio connector's "Run a topic" action. That topic **extracts
+the 17 credit-risk data points itself, inline** — via a Prompt action
+configured directly on the topic step, not a separately published AI
+Builder catalog Prompt (full list and JSON contract in
 [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md))
 — and returns the parsed, validated JSON as topic outputs, with no chat
 activity sent anywhere.
 
 The flow re-parses that response, and — if it's usable — **copies the
 bank's own appraisal review template** to a new file, writes the values
-into that copy's named cells on the `RE Collateral` sheet, and posts a
-plain-language summary, any fields it could not find, and a link to the
-new workbook **to a Teams channel**. A rejected upload or a failed
-extraction each get their own distinct Teams post from the flow — the
-agent never posts anything itself in this design, since it has no
-conversation to post into.
+into that copy's named cells on the `RE Collateral` sheet, and **replies in
+the same message thread** with a plain-language summary, any fields it
+could not find, and a link to the new workbook. A rejected attachment or a
+failed extraction each get their own reply in that same thread — the agent
+never posts anything itself in this design, since it has no conversation to
+post into.
 
 This split matters for cost, not just architecture: neither the flow nor
 the agent's topic has an AI Builder connector. The one LLM call this tool
@@ -127,13 +134,14 @@ deploying, or update the sheet name in
 
 | Choice | Why it keeps cost (and risk) down |
 |---|---|
-| **Flow-calls-agent, not agent-calls-flow** — trigger is SharePoint "When a file is created," not Copilot Studio's native child-flow trigger | Routes around a DLP policy that blocks `shared_powervirtualagents`. **This is a risk mitigation, not a cost optimization** — verify the connector this design *does* use (Copilot Studio "Run a topic") isn't grouped with the blocked one in your tenant before deploying (see the callout at the top of this guide). |
+| **Trigger is Teams "For a selected message,"** not Copilot Studio's native child-flow trigger and not an automatic SharePoint/channel-message trigger | Routes around a DLP policy that blocks `shared_powervirtualagents`, while keeping the trigger genuinely Teams-native and explicit — the flow only ever runs when an analyst deliberately selects it on a specific message, never automatically on every channel post or every file drop. Nothing runs (and nothing is spent) until someone asks for it. |
+| **Flow-calls-agent, not agent-calls-flow**, for the extraction step | Same DLP-avoidance rationale as the trigger choice, applied to the second connector boundary in this design. **Verify the Copilot Studio "Run a topic" connector isn't grouped with the blocked one in your tenant** before deploying (see the callout at the top of this guide) — this is risk mitigation, not a cost optimization on its own. |
 | Extraction via an **inline Prompt action configured directly on the topic**, not a separately published AI Builder catalog Prompt, and not an AI Builder call inside the flow | One fewer resource to create, publish, version, and administer — there is no AI Builder catalog object for this tool at all. Neither flow action nor topic action can trigger an AI Builder charge, structurally. **This does not eliminate the LLM cost of reading the PDF** — that call still happens inside the topic, billed as Copilot Studio generative/message consumption. Do not read this row as "free extraction." |
 | Cell population via **Office Scripts** ("Run script"), a standard Excel Online (Business) action | No Premium connector and no custom Azure Function to write 17 cells — Office Scripts are included in standard Microsoft 365 licensing. |
 | **One new file per review**, copied from your existing template | Deliberate (matches how the bank already packages appraisal reviews), not the lowest-cost option — the trade-off is one Copy File action and one Create Sharing Link action per run, small next to the generative cost already spent on extraction. |
-| Template, destination, intake, and notification locations are **flow parameters you designate**, not hardcoded | You point the flow at wherever your team actually keeps each of these — no repo-provided values to keep in sync with reality. |
-| **File-type/size validation moved into the flow** (`Validate_Upload`), ahead of the call to the agent | The SharePoint trigger fires unconditionally on any upload, so *something* has to reject bad files before the generative call — that gate used to be a chat-side check before the file ever reached a flow; now the flow is first in line, so the flow does it. A malformed or oversized upload never reaches `Call_Extraction_Agent`. |
-| **No retries** on a failed extraction | A failure is posted to Teams immediately instead of silently doubling the cost on a document likely to fail again. |
+| Template and destination locations are **flow parameters you designate**, not hardcoded | You point the flow at wherever your team actually keeps each of these — no repo-provided values to keep in sync with reality. |
+| **Attachment count and size validated before the agent is ever called** (`Condition_Has_One_Pdf`, `Condition_Is_Valid_Size`) | A message with the wrong number of attachments, a non-PDF, or an oversized file never reaches `Call_Extraction_Agent` — rejected for the cost of a couple of SharePoint lookups, not a generative call. |
+| **No retries** on a failed extraction | A failure is replied into the same thread immediately instead of silently doubling the cost on a document likely to fail again. |
 | Extraction failures never reach the write steps | `Condition_Extraction_Ok` branches on the topic's `parseSucceeded` output before `Copy_Template_To_New_File` runs at all — a bad extraction never spends a Copy File / Run Script / Create Sharing Link action, and never leaves an orphaned partially-written workbook in the destination folder. |
 
 The only new recurring costs are **Copilot Studio generative/message
@@ -161,17 +169,17 @@ a few hundred KB).
 |---|---|
 | **Microsoft Copilot Studio** license, with generative/message capacity sufficient for inline Prompt actions | Runs the extraction — see cost note above. No AI Builder capacity is required; this design never calls AI Builder. |
 | Confirmation from your Power Platform admin that the **Copilot Studio "Run a topic" connector is allowed** under your DLP policy | This whole design exists to route around a blocked `shared_powervirtualagents` connector — if the connector this design uses instead is *also* blocked (some tenants group them), this approach does not work and you'll need a different hand-off mechanism (e.g., a SharePoint list as a message queue instead of a direct connector call). |
+| The **Teams Workflows app** available in your tenant (on by default for most Microsoft 365 commercial tenants) | This is how analysts see and run this flow from a message's context menu — confirm with your Teams admin if "Workflows" doesn't appear under a message's "···" menu. |
 | Your bank's **existing appraisal review template**, with a sheet named exactly `RE Collateral` and the cell layout in the table above | This tool copies and populates it — it does not create one for you |
 | **Office Scripts** enabled for your tenant/site (on by default for most Microsoft 365 commercial tenants; confirm with your M365 admin if "Automate" doesn't appear in Excel Online) | Runs the cell-population script — standard M365 feature, no added license cost |
-| A **SharePoint site and document library** for the template, one for completed reviews, and one for intake uploads (can all be the same site, different libraries) | Source, destination, and trigger locations you'll designate as flow parameters |
-| **Excel Online (Business)**, **SharePoint**, and **Microsoft Teams** connections (standard, no Premium required) | Used by the flow to copy files, run the script, and post notifications |
-| A **Teams channel** for completion/failure/rejection notifications, and optionally a Files tab pointed at the intake library | Where analysts see results — no bot conversation happens in this design |
+| A **SharePoint site and document library** for the template, and one for completed reviews (can be the same site/library) | Source and destination locations you'll designate as flow parameters |
+| **Excel Online (Business)**, **SharePoint**, and **Microsoft Teams** connections (standard, no Premium required) | Used by the flow to resolve/read the attachment, copy files, run the script, and reply in Teams |
 | An account with **Environment Maker** (or higher) in the target Power Platform environment | To create the flow and agent |
 | An account with **git** access, to clone this repository | To pull the reference files you'll build the flow and topic from |
 
 ---
 
-## Part A — Designate template, destination, intake, and notification locations
+## Part A — Designate template, destination, and Teams files locations
 
 Nothing is provisioned here — you're just choosing (and writing down) where
 things already live, or should be saved:
@@ -186,21 +194,17 @@ things already live, or should be saved:
    - **Destination site URL**
    - **Destination folder path** — e.g.
      `/sites/CreditRisk/Shared Documents/Appraisal Reviews`
-3. **Choose or create an intake library.** This is new in this version —
-   the folder analysts drop PDFs into, which triggers the flow. Note:
-   - **Intake site URL**
-   - **Intake folder path** — e.g.
-     `/sites/CreditRisk/Shared Documents/Appraisal Review Intake`
-4. **Identify the Teams channel for notifications.** Get its channel ID
-   (Teams → the channel's **···** menu → **Get link to channel**, or via
-   the Teams connector's own picker when configuring the flow action in
-   Part E) — this is where `Shared-AppraisalReviewOrchestrator` posts every
-   success, failure, and rejection message.
-5. Confirm the account that will own the Power Automate flow (Part E) has
+3. **Identify the SharePoint site backing your credit risk Team.** Files
+   analysts attach to Teams channel messages land in that Team's own
+   SharePoint site under the hood — this is what the flow needs to resolve
+   attachment properties and content from the trigger. Note:
+   - **Teams files site URL** — usually
+     `https://yourbank.sharepoint.com/sites/<TeamName>`, findable via the
+     channel's Files tab → **Open in SharePoint**.
+4. Confirm the account that will own the Power Automate flow (Part E) has
    **edit** access to the template's library (read is enough there, since
-   the flow only copies it), the destination folder (write), and the
-   intake folder (read, to trigger and fetch content), plus post access to
-   the notification channel.
+   the flow only copies it), the destination folder (write), and read
+   access to the Teams files site.
 
 You'll paste these values into the flow's parameters in Part E.
 
@@ -227,8 +231,6 @@ stay a checklist.
    input (see Part C):
    - Name: `document`
    - Type: **File**
-   - Value: the topic input, not a chat-collected attachment — there is no
-     attachment-collection step in this version of the topic.
 4. In the instructions box, paste the **Extraction Requirements** and
    **Output Requirements** sections from
    [`agent/appraisal-agent-instructions.md`](agent/appraisal-agent-instructions.md)
@@ -315,108 +317,124 @@ one from Part A) — every copy of it keeps the script.
 
 > **Reference file:** `flows/Shared-AppraisalReviewOrchestrator.json`
 
-This flow now owns the entire run — trigger, calling the agent, writing
-cells, and all analyst-facing Teams communication.
+This flow owns the entire run — trigger, resolving the attachment, calling
+the agent, writing cells, and every reply in the message thread.
 
 1. Go to [make.powerautomate.com](https://make.powerautomate.com) → **+
    Create** → **Automated cloud flow**.
 2. Name it `Shared-AppraisalReviewOrchestrator`.
-3. In the trigger search box, choose **SharePoint → "When a file is
-   created (properties only)"** (or "When a file is created," depending on
-   your connector version). Site Address: your **Intake site URL**.
-   Library/Folder: your **Intake folder path** (both from Part A).
+3. In the trigger search box, search **"Microsoft Teams"** and select
+   **"For a selected message."** This is the connector operation behind
+   the Workflows app's message context menu — its exact display name and
+   output field names vary by connector version in your tenant, so build
+   this by picking it from the live designer rather than trying to paste
+   the reference file's trigger block literally.
 
 **Add these actions in order:**
 
 **Action 1 — Compose (`Init_RunTimestamp`)**
 - Inputs (expression): `utcNow()`
 
-**Action 2 — SharePoint: "Get file properties"**
-- Resolves the uploaded file's name and size from the trigger's `Id`
-  output — needed for the validation check next.
+**Action 2 — Filter array (`Filter_Pdf_Attachments`)**
+- From: the trigger's **attachments** output (a Teams message's attachments
+  come through in the Bot Framework Activity shape — each item has `name`,
+  `contentType`, `contentUrl`).
+- Condition: `name` ends with `.pdf` (case-insensitive — lowercase both
+  sides).
 
-**Action 3 — Compose (`Validate_Upload`)**
-- Inputs (expression):
-  ```
-  and(endsWith(toLower(body('Get_file_properties')?['Name']), '.pdf'), less(body('Get_file_properties')?['Size'], 15728640))
-  ```
-  (replace `Get_file_properties` with your actual step name)
-
-**Action 4 — SharePoint: "Get file content"**
-- File Identifier: the trigger's `Id` output.
-- This reads the bytes to pass to the agent — only worth doing for files
-  that will pass validation, but simplest to place before the branch since
-  Power Automate's designer makes conditional-content-reads awkward; if
-  your tenant's connector supports lazy/on-demand content reads, move this
-  inside the "valid" branch instead to avoid reading rejected files.
-
-**Action 5 — Condition (`Condition_Is_Valid`)**
-- Condition: `Validate_Upload` output is equal to `true`.
+**Action 3 — Condition (`Condition_Has_One_Pdf`)**
+- Condition: `length()` of the filtered array equals `1`.
+- **This branch is where the "exactly one PDF attached" rule lives** — a
+  message with zero or multiple PDF attachments is rejected here, before
+  anything downstream runs.
 
 **If yes — branch actions in order:**
 
-**Action 6 — AI... no.** Skip AI Builder entirely. Instead:
+**Action 4 — SharePoint: "Get file properties"**
+- File Identifier: the filtered attachment's `contentUrl`.
+- **This is the fiddly step in this design.** Resolving a Teams
+  attachment's `contentUrl` into whatever your SharePoint connector's "Get
+  file properties" action actually expects (a server-relative path, an
+  item ID, or the URL directly, depending on connector version) is not
+  perfectly standardized — test this action in isolation first with a
+  sample message before wiring up everything downstream of it. Site
+  Address: your **Teams files site URL** (Part A).
 
-**Action 6 — Copilot Studio: "Run a topic"** (or your tenant's equivalent
+**Action 5 — Condition (`Condition_Is_Valid_Size`)**
+- Condition: file `Size` (from Action 4) is less than `15728640` (15 MB).
+
+**If yes — branch actions in order:**
+
+**Action 6 — SharePoint: "Get file content"**
+- File Identifier: the same identifier resolved in Action 4.
+
+**Action 7 — Copilot Studio: "Run a topic"** (or your tenant's equivalent
 action name for this connector — search "Copilot Studio" in the connector
 list)
 - Environment: your Power Platform environment.
 - Bot: `Appraisal Review Extractor` (from Part F).
 - Topic: `Extract Appraisal Fields` (from Part C).
-- `document` input: the output of **Get file content** (Action 4).
-- **This is the action to double-check against your DLP policy before
-  building the rest of the flow** — if it's blocked too, stop here and
-  reconsider the approach (see the callout at the top of this guide).
+- `document` input: the output of **Get file content** (Action 6).
+- **This is the second action to double-check against your DLP policy** —
+  if it's blocked too, stop here and reconsider the approach (see the
+  callout at the top of this guide).
 
-**Action 7 — Parse JSON**
+**Action 8 — Parse JSON**
 - Content: `Run a topic`'s `extractionJson` output.
 - Schema: paste the `properties` block from
   `flows/Shared-AppraisalReviewOrchestrator.json` →
-  `actions.Condition_Is_Valid.actions.Parse_Agent_Response.inputs.schema`.
+  `actions.Condition_Has_One_Pdf.actions.Condition_Is_Valid_Size.actions.Parse_Agent_Response.inputs.schema`.
 
-**Action 8 — Condition (`Condition_Extraction_Ok`)**
-- Condition: `Run a topic`'s `parseSucceeded` output is equal to `true`.
+**Action 9 — Condition (`Condition_Extraction_Ok`)**
+- Condition: `Run a topic`'s `parseSucceeded` output equals `true`.
 
-**If yes — the write path (mirrors the previous version's flow):**
+**If yes — the write path:**
 
-**Actions 9–15** — Compose `Format_Appraiser_Names`, Compose
+**Actions 10–15** — Compose `Format_Appraiser_Names`, Compose
 `Format_City_State`, Compose `Build_Destination_File_Name`, SharePoint
 "Copy file", SharePoint "Get file properties" (of the new copy), Excel
-Online "Run script" (script parameters straight off `Parse JSON`'s output
-this time, not `triggerBody()` — see
-`actions.Condition_Is_Valid.actions.Condition_Extraction_Ok.actions.Populate_Review_Cells`
-in the reference file for every expression), SharePoint "Create sharing
-link." Same configuration notes as the previous version of this guide
-applied to the equivalent actions — the only change is every
-`triggerBody()?['x']` reference becomes `body('Parse_Agent_Response')?['x']`.
+Online "Run script" (script parameters straight off `Parse JSON`'s output —
+see `actions...Populate_Review_Cells` in the reference file for every
+expression), SharePoint "Create sharing link." Same configuration notes as
+earlier versions of this guide applied to the equivalent actions.
 
-**Action 16 — Teams: "Post message in a channel" (`Post_Success_To_Teams`)**
-- Team / Channel: your **notification channel** (Part A).
-- Message: see `actions.Condition_Is_Valid.actions.Condition_Extraction_Ok.actions.Post_Success_To_Teams.inputs.body.body`
+**Action 16 — Teams: "Reply with a message in a channel conversation"
+(`Reply_Success_In_Thread`)**
+- Team / Channel / Message: bind these to the **trigger's own**
+  `teamId` / `channelId` / `messageId` outputs — there is no channel to
+  hardcode; the reply always lands in the thread the analyst is already
+  looking at.
+- Message: see
+  `actions...Condition_Extraction_Ok.actions.Reply_Success_In_Thread.inputs.body.body`
   for the exact expression — states what was created, flags missing
   fields, includes the workbook link.
 
-**If no (extraction parse failed) — `Post_Extraction_Failure_To_Teams`:**
-same Teams action, different message; see the reference file. No workbook
-is created in this branch.
+**If no (extraction parse failed) — `Reply_Extraction_Failure_In_Thread`:**
+same Teams reply action, different message; see the reference file. No
+workbook is created in this branch.
 
-**If Action 5 was no (upload failed validation) — `Post_Rejection_To_Teams`:**
-same Teams action again, explaining the file was rejected. The agent is
-never called in this branch — no generative cost is spent on an invalid
-upload.
+**If Action 5 was no (attachment too large) — `Reply_Rejection_In_Thread_Size`:**
+same reply action, explains the size limit. The agent is never called in
+this branch.
+
+**If Action 3 was no (wrong attachment count) — `Reply_Rejection_In_Thread_Attachment`:**
+same reply action, explains exactly one PDF is required. The agent is
+never called in this branch either.
 
 **One error branch outside the main condition tree:**
 
 **Compose (`Handle_Write_Failure`)**
-- Configure **Run after**: `Condition_Is_Valid` **has failed** or **timed
-  out** — catches anything that breaks inside either branch that isn't
-  already handled by the three Teams-post branches above (e.g. Copy File
-  or Run Script erroring out after a successful extraction).
+- Configure **Run after**: `Condition_Has_One_Pdf` **has failed** or **timed
+  out** — catches anything that breaks deep enough in either branch that a
+  clean Teams reply isn't guaranteed available (e.g. Copy File or Run
+  Script erroring out after a successful extraction). This is a diagnostic
+  Compose, not a Teams reply — check run history for this failure mode
+  rather than expecting a message in Teams.
 
-4. **Save** the flow. Unlike the previous version, there is no trigger
-   Outputs panel to configure — this flow's trigger is a standard
-   SharePoint event, not Copilot Studio's child-flow trigger, so there is
-   no caller waiting on a structured response.
+4. **Save** the flow. There is no trigger Outputs panel to configure —
+   unlike the very first version of this tool, this flow's trigger is a
+   standard Teams message trigger, not Copilot Studio's child-flow trigger,
+   so there is no caller waiting on a structured response.
 
 ---
 
@@ -445,50 +463,54 @@ upload.
 
 ---
 
-## Part G — Connect the intake Files tab and Teams notifications
+## Part G — Make the workflow available in Teams
 
-1. In the Teams channel your credit risk team already uses, add a **Files**
-   tab (**+** → **Files**, or drag-and-drop directly into the channel's
-   existing Files tab) pointed at the **intake library** from Part A —
-   Teams channels already have a Files tab backed by a SharePoint library;
-   if the channel's default library isn't your intake library, add the
-   intake library as an additional tab instead of trying to redirect the
-   default one.
-2. Confirm analysts can drop a file into that tab and see it land in the
-   SharePoint library at the path you configured — this is the entire
-   "trigger" surface for this tool now; there is no bot to message.
-3. Confirm `Shared-AppraisalReviewOrchestrator`'s Teams action (Part E,
-   Action 16 and the two failure-branch equivalents) is configured to post
-   into this same channel, so results show up next to where the file was
-   dropped.
+Unlike the agent, this flow needs to be reachable from Teams' message
+context menu.
+
+1. In Power Automate, open `Shared-AppraisalReviewOrchestrator` → **···** →
+   **Share** (or **Details** → **Share**, depending on your designer
+   version) and add the credit risk team's members/security group as
+   **Run only** or **Co-owner** users, per your team's normal flow-sharing
+   convention.
+2. In Teams, open the credit risk channel, click **···** on any message,
+   and confirm **Workflows** appears in the menu. Select it, search for
+   `Shared-AppraisalReviewOrchestrator` by name, and **add it to this
+   Team/channel** if your Teams client requires an explicit "add workflow
+   to this team" step the first time (this varies by tenant configuration).
+3. Confirm every analyst who needs to run this workflow either has it
+   shared directly (step 1) or has access via the Team/channel association
+   (step 2) — Teams surfaces the workflow in the message menu, but running
+   it still requires the underlying Power Automate sharing permission.
 
 ---
 
 ## Part H — Test end-to-end
 
-1. Drop a sample appraisal review PDF into the intake Files tab (or
-   directly into the SharePoint intake folder).
-2. Confirm in the flow's run history that
-   `Shared-AppraisalReviewOrchestrator` triggered, `Validate_Upload`
-   evaluated `true`, and `Run a topic` (Call_Extraction_Agent) succeeded.
-3. Confirm a message appears in the Teams notification channel within
-   about a minute, reporting "Created \<file name\>..." with a workbook
-   link.
-4. Open the link — the `RE Collateral` sheet should show all 17 cells
+1. Post a sample appraisal review PDF as an attachment on a message in the
+   credit risk channel.
+2. On that message, select **··· → Workflows →** run
+   `Shared-AppraisalReviewOrchestrator`.
+3. Confirm in the flow's run history that it triggered, `Condition_Has_One_Pdf`
+   and `Condition_Is_Valid_Size` both evaluated `true`, and `Run a topic`
+   (`Call_Extraction_Agent`) succeeded.
+4. Confirm a reply appears in the same message thread within about a
+   minute, reporting "Created \<file name\>..." with a workbook link.
+5. Open the link — the `RE Collateral` sheet should show all 17 cells
    populated (or `Not Stated` for anything genuinely absent from the
    source PDF), and every other sheet/cell in the template should be
    untouched.
-5. Test with a PDF missing a review sign-off page — confirm `F31`/`F32`
-   come back `Not Stated`, and the Teams message flags missing fields.
-6. Test the guardrails: drop a non-PDF file and a file over 15 MB. Both
-   should produce a rejection message in Teams, and the flow's run history
-   should show `Run a topic` never executed for either (check
-   `Condition_Is_Valid` evaluated `false` and the flow went straight to
-   `Post_Rejection_To_Teams`).
-7. Drop two PDFs for the same property on the same day and confirm two
-   distinct workbook files (the timestamp suffix in the file name should
-   differ).
-8. **Specifically confirm the DLP question this whole design exists to
+6. Test with a PDF missing a review sign-off page — confirm `F31`/`F32`
+   come back `Not Stated`, and the reply flags missing fields.
+7. Test the guardrails: run the workflow on a message with a non-PDF
+   attachment, a message with no attachment, a message with two PDFs
+   attached, and (if you have one) a PDF over 15 MB. Each should produce
+   its own distinct rejection reply, and the flow's run history should
+   show `Run a topic` never executed for any of them.
+8. Run the workflow twice on two different messages for the same property
+   on the same day and confirm two distinct workbook files (the timestamp
+   suffix in the file name should differ).
+9. **Specifically confirm the DLP question this whole design exists to
    answer**: open the successful run's details for the `Run a topic`
    action and confirm it actually executed rather than being silently
    blocked at the connector level (a DLP block sometimes surfaces as a
@@ -499,25 +521,36 @@ upload.
 
 ## Troubleshooting
 
-**The flow never triggers when a file is dropped**
-- Confirm the SharePoint trigger's site/folder in Part E step 3 exactly
-  matches the intake library from Part A — a typo here means the trigger
-  is watching the wrong (or a nonexistent) folder.
-- SharePoint's "When a file is created" trigger polls rather than firing
-  instantly in some tenants; wait a few minutes before assuming it's
-  broken, then check the trigger's run history for polling activity even
-  when no run was produced.
+**"Workflows" doesn't appear on a message's "···" menu**
+- Confirm the Teams Workflows app is enabled for your tenant (Teams admin
+  center → Manage apps → search "Workflows").
+- Confirm the flow was shared with the user, or added to the Team/channel,
+  per Part G.
+
+**`Shared-AppraisalReviewOrchestrator` isn't listed when searching Workflows
+in Teams**
+- Confirm the flow is actually saved and turned on in Power Automate.
+- Confirm the sharing/Team-association step in Part G was completed — a
+  flow that exists but was never shared or added to the Team won't surface
+  in the picker for anyone but its owner.
+
+**`Get file properties` (Action 4) fails to resolve the attachment**
+- This is the step most likely to need tenant-specific adjustment (see
+  Part E, Action 4). Test it in isolation: trigger the flow manually on a
+  message with a known PDF attached, then inspect exactly what the
+  trigger's `attachments[0].contentUrl` looks like in that run's inputs,
+  and adjust the "Get file properties" call to match what your SharePoint
+  connector version actually expects (path vs. URL vs. item ID).
 
 **`Run a topic` (Call_Extraction_Agent) fails immediately, especially with a
 generic connection/authorization error**
-- This is the failure mode to treat as a DLP block first, not a
-  configuration bug — re-confirm with your Power Platform admin that the
-  Copilot Studio "Run a topic" connector is actually allowed, not just
-  assumed to be different from the blocked one. If it's blocked too, this
-  whole design needs to fall back to a non-connector hand-off (e.g., the
-  agent — or a person — writes results to a SharePoint list that a
-  separately-triggered flow polls, rather than any direct connector call
-  in either direction).
+- Treat this as a DLP block first, not a configuration bug — re-confirm
+  with your Power Platform admin that the Copilot Studio "Run a topic"
+  connector is actually allowed, not just assumed to be different from the
+  blocked one. If it's blocked too, this whole design needs to fall back
+  to a non-connector hand-off (e.g., a SharePoint list as a message queue
+  that a separately-triggered flow polls, rather than any direct connector
+  call in either direction).
 - If it's not a DLP block: confirm the agent (Part F) is published, the
   `appraisalAgentId` and `extractionTopicName` parameters exactly match
   your published agent and topic, and the environment ID matches where the
@@ -555,7 +588,7 @@ generic connection/authorization error**
   value — check `Parse_Agent_Response`'s raw output for that field in the
   flow's run history; the model likely didn't find it in the source PDF.
 
-**Create Sharing Link step fails, or the Teams message has no link**
+**Create Sharing Link step fails, or the reply has no link**
 - Confirm the flow's SharePoint connection has sharing permissions on the
   destination library (some tenants restrict link creation by policy).
 - Check `Get_New_File_Properties`' output — if the drive/item identifiers
@@ -564,19 +597,19 @@ generic connection/authorization error**
   dynamic-content binding to match the actual output fields shown in your
   designer.
 
-**No Teams message ever arrives, even for a rejected upload**
-- Confirm `notificationChannelId` in the flow's parameters resolves to a
-  channel the flow's Teams connection actually has post access to.
-- Confirm the flow's run history shows it reached one of the three
-  `Post_*_To_Teams` actions at all — if the run failed earlier (e.g., the
-  trigger itself, or `Get file properties`), no Teams action ever executes,
-  and this looks identical to a silent failure from the analyst's side.
+**No reply ever arrives in the thread, even for a rejected attachment**
+- Confirm the flow's Teams connection has post/reply access in the channel
+  the message was posted in.
+- Confirm the flow's run history shows it reached one of the four
+  `Reply_*` actions at all — if the run failed earlier (e.g., the trigger
+  itself, or `Get file properties`), no reply action ever executes, and
+  this looks identical to a silent failure from the analyst's side.
 
 **Costs climbing faster than expected**
-- Confirm `Validate_Upload` is still correctly rejecting oversized/non-PDF
-  files before `Call_Extraction_Agent` runs — if someone edited the
-  condition, invalid uploads could reach the agent and consume generative
-  capacity before being rejected.
+- Confirm `Condition_Has_One_Pdf` and `Condition_Is_Valid_Size` are still
+  correctly rejecting invalid attachments before `Call_Extraction_Agent`
+  runs — if someone edited either condition, invalid uploads could reach
+  the agent and consume generative capacity before being rejected.
 - Confirm `Condition_Extraction_Ok` is still wired up so a failed parse
   never reaches the write actions, leaving no orphaned partially-copied
   files in the destination folder.

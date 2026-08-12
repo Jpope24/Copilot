@@ -25,25 +25,27 @@
 **Purpose**: A **callable** topic (not a chat conversation) that extracts a
 fixed set of credit-risk data points from a commercial real estate appraisal
 review PDF. It is invoked by `Shared-AppraisalReviewOrchestrator` — a Power
-Automate flow that is itself triggered by a PDF landing in a SharePoint
-intake library, not by a Teams conversation. The flow calls this topic
-(passing the PDF), this topic extracts the 17 fields itself and returns them
-as structured JSON, and the flow does everything downstream: copies the
-bank's own appraisal review template to a new workbook, writes the values
-into that workbook's named cells (sheet `RE Collateral`), and posts the
-result to a Teams channel. This agent has no extraction-adjacent flow
-dependency and no AI Builder connector of its own — see "How This Agent Is
-Invoked" below for exactly where each piece runs and why the control
-direction is inverted from a typical Copilot Studio tool.
+Automate flow that is itself triggered directly from Microsoft Teams: an
+analyst posts a channel message with the PDF attached, then runs the flow on
+that specific message via the Teams Workflows app's message context menu.
+The flow calls this topic (passing the PDF), this topic extracts the 17
+fields itself and returns them as structured JSON, and the flow does
+everything downstream: copies the bank's own appraisal review template to a
+new workbook, writes the values into that workbook's named cells (sheet
+`RE Collateral`), and replies in the same Teams message thread. This agent
+has no extraction-adjacent flow dependency and no AI Builder connector of
+its own — see "How This Agent Is Invoked" below for exactly where each piece
+runs and why the control direction is inverted from a typical Copilot Studio
+tool.
 
 ### Requestor Context
 
-There is no live Teams user in this invocation model — the flow, not this
-agent, is what a file's arrival triggers. `Shared-AppraisalReviewOrchestrator`
-resolves "who uploaded this" from the intake file's own SharePoint metadata
-(`Author`/`Created By`) for the audit trail, and posts all analyst-facing
-messages to a Teams channel itself. Nothing about requestor identity is
-configured in this agent.
+There is no live Teams *conversation with this agent* in this invocation
+model — but there is still a Teams user: the analyst who posted the message
+and ran the workflow on it. `Shared-AppraisalReviewOrchestrator` reads that
+directly off the trigger (the message's sender) for the audit trail and
+replies into the same thread. Nothing about requestor identity is configured
+in this agent — this agent never sees who triggered the run, only the file.
 
 ### Template & Destination Location
 
@@ -61,8 +63,9 @@ Part A.
 These limits keep generative consumption predictable. Because this agent no
 longer sits in front of the upload (the flow does), **the file-size/type gate
 now lives in `Shared-AppraisalReviewOrchestrator`, not here** — see
-`Validate_Upload` in that flow. This section documents the same limits for
-reference; changing them means editing the flow, not republishing this agent.
+`Condition_Has_One_Pdf` and `Condition_Is_Valid_Size` in that flow. This
+section documents the same limits for reference; changing them means editing
+the flow, not republishing this agent.
 
 - **Max file size**: 15 MB. Larger files are rejected by the flow before this
   agent's topic is ever invoked (protects against runaway generative
@@ -84,14 +87,16 @@ This agent is **not published to a Teams channel for conversation** in this
 design — its only caller is `Shared-AppraisalReviewOrchestrator`, via the
 Copilot Studio connector's "Run a topic" action. The end-to-end flow:
 
-1. An analyst drops an appraisal review PDF into a SharePoint intake library
-   (which can be surfaced as a Teams channel Files tab for a Teams-native
-   feel, without any bot conversation happening).
-2. `Shared-AppraisalReviewOrchestrator` triggers on that file's creation,
-   checks it's a `.pdf` under 15 MB, and — only if valid — calls this
-   agent's callable extraction topic (`agent/appraisal-agent-topic.yaml`,
-   trigger kind `OnInvokeTopic`), passing the file content as the `document`
-   input.
+1. An analyst posts an appraisal review PDF as an attachment on a channel
+   message, then explicitly runs `Shared-AppraisalReviewOrchestrator` on
+   that message via Teams' Workflows app (the "···" / "More actions" menu
+   on the message). This is the entire trigger surface — no bot
+   conversation, no intake folder to drop files into.
+2. `Shared-AppraisalReviewOrchestrator` reads the triggering message's
+   attachment, checks it's exactly one `.pdf` under 15 MB, and — only if
+   valid — calls this agent's callable extraction topic
+   (`agent/appraisal-agent-topic.yaml`, trigger kind `OnInvokeTopic`),
+   passing the file content as the `document` input.
 3. This topic extracts the 17 fields **itself**, via an inline Prompt action
    configured directly on the topic step (`extractFieldsInline`) — not a
    separately published AI Builder catalog Prompt. This is still a
@@ -106,9 +111,10 @@ Copilot Studio connector's "Run a topic" action. The end-to-end flow:
 5. The flow re-parses `extractionJson` itself, branches on `parseSucceeded`,
    and — if the extraction is usable — copies the designated template to a
    new, uniquely named workbook, writes the values into that workbook's named
-   cells, and posts a summary plus the workbook link to a Teams channel. A
-   failed extraction, a failed write, or a rejected upload each get their own
-   distinct Teams post from the flow, never from this agent.
+   cells, and **replies in the same Teams message thread** the analyst
+   posted the PDF in, with a summary and the workbook link. A failed
+   extraction, a failed write, or a rejected attachment each get their own
+   distinct reply from the flow, never from this agent.
 
 No data is emailed. Each extraction produces exactly one new workbook —
 never a shared file two concurrent requests could collide on — named from
@@ -227,8 +233,9 @@ and the flow will never attempt to write a workbook.
 This topic sends no chat activity — it only returns `extractionJson` and
 `parseSucceeded` to the calling flow. The plain-language, no-filler tone
 credit risk analysts expect is now the calling flow's responsibility, in
-`Post_Success_To_Teams` / `Post_Extraction_Failure_To_Teams` /
-`Post_Rejection_To_Teams` (`flows/Shared-AppraisalReviewOrchestrator.json`).
-`missingFields` and `extractionNotes` still have to make it into that
-message — confirm the flow's Teams post text surfaces both, since this agent
-can no longer do that itself.
+`Reply_Success_In_Thread` / `Reply_Extraction_Failure_In_Thread` /
+`Reply_Rejection_In_Thread_Attachment` / `Reply_Rejection_In_Thread_Size`
+(`flows/Shared-AppraisalReviewOrchestrator.json`). `missingFields` and
+`extractionNotes` still have to make it into that reply — confirm the flow's
+Teams reply text surfaces both, since this agent can no longer do that
+itself.
