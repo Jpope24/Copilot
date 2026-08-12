@@ -1,8 +1,8 @@
 // Office Script for the Excel Online (Business) "Run script" action in
-// Shared-AppraisalCellWriter. Add this to the tracker template file via
-// Excel Online > Automate > New Script, paste this file's contents, save it
-// as "PopulateAppraisalReviewCells", then select it in the flow's Run Script
-// action (see DEPLOYMENT.md, Appraisal PDF-to-Excel Extractor Deployment).
+// Shared-AppraisalReviewOrchestrator. Add this to the tracker template file
+// via Excel Online > Automate > New Script, paste this file's contents,
+// save it as "PopulateAppraisalReviewCells", then select it in the flow's
+// Run Script action (see DEPLOYMENT.md, Part D).
 //
 // Every parameter is typed as string so the flow can always pass
 // "Not Stated" for a missing value without a type mismatch; this script

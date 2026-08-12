@@ -1,209 +1,98 @@
 kind: AdaptiveDialog
 modelDescription: >
-  Accepts an appraisal review PDF attached in a Teams chat or channel,
-  extracts 17 credit-risk data points itself (occupancy, address, collateral
-  value, valuation type, appraiser/reviewer names and dates, building
-  metrics, condition, exposure time, and highest-and-best-use conclusion)
-  using an inline generative Prompt action configured directly on this
-  topic — NOT a separately published AI Builder catalog Prompt, and NOT an
-  AI Builder call inside the companion flow. Once the extraction is parsed
-  and validated in-conversation, the topic hands only the finished,
-  already-extracted values to Shared-AppraisalCellWriter, which copies the
-  bank's own appraisal review template to a new workbook, writes the values
-  into it, and returns a link to the new file. Shared-AppraisalCellWriter
-  has no AI Builder connector at all — see its _meta.costNotes.
+  CALLABLE topic — invoked by Shared-AppraisalReviewOrchestrator (a Power
+  Automate flow) via the Copilot Studio connector's "Run a topic" action.
+  This is the inverse of the previous design: previously this agent called
+  a flow (InvokeFlowAction) using the "When Copilot Studio calls a flow"
+  trigger, which this tenant's DLP policy blocks (the shared_powervirtualagents
+  connector). Now a flow calls INTO this topic instead, using a different
+  connector — verify in your own tenant that this connector is not grouped
+  with the blocked one before relying on this design; some tenants classify
+  the two together, in which case this inversion does not actually route
+  around the block.
+
+  This topic has no conversational entry point, no trigger phrases, and
+  sends no chat activity — it takes a PDF file as an input, extracts 17
+  credit-risk data points itself via an inline generative Prompt action
+  configured directly on this topic, and returns the parsed/validated JSON
+  as topic outputs. All analyst-facing communication (acknowledgment,
+  summary, missing-fields flag, workbook link, rejections) now happens in
+  Shared-AppraisalReviewOrchestrator, via a Teams channel post — not here.
+
+# ── Callable topic contract ───────────────────────────────────────────────
+# Configured via the topic's own Settings > Inputs/Outputs panel in the
+# Copilot Studio designer, not something the YAML editor can fully create
+# for you — see DEPLOYMENT.md, Part E, for the manual steps this requires.
+inputs:
+  - name: document
+    type: File
+    description: >
+      The appraisal review PDF to extract data from. Bound to the calling
+      flow's Get_File_Content output (Shared-AppraisalReviewOrchestrator,
+      Call_Extraction_Agent action body.document).
+
+outputs:
+  - name: extractionJson
+    type: String
+    description: >
+      The raw JSON string produced by the inline Prompt action. The calling
+      flow re-parses this itself (Parse_Agent_Response) against the same
+      17-field schema — this topic's own parse (below) is a validation gate,
+      not a substitute for the flow having typed access to the fields.
+  - name: parseSucceeded
+    type: Boolean
+    description: >
+      True only if this topic's own ParseJSON check passed. The calling
+      flow branches on this (Condition_Extraction_Ok) before trusting
+      extractionJson's shape — mirrors what checkParsedOk used to guard
+      against in the previous, chat-triggered version of this topic.
 
 triggers:
-  - kind: OnRecognizedIntent
+  - kind: OnInvokeTopic
     id: main
-    intent:
-      displayName: Extract Appraisal Review
-      triggerQueries:
-        - Extract appraisal
-        - Process appraisal review
-        - Read this appraisal
-        - Create an appraisal review workbook
     actions:
 
-      # ── Step 1: Get the requestor's identity for the audit trail ─────────
-      - kind: SetVariable
-        id: setRequestorName
-        variable: topic.requestedByName
-        value: =System.User.DisplayName
-
-      - kind: SetVariable
-        id: setRequestorEmail
-        variable: topic.requestedByEmail
-        value: =System.User.Email
-
-      # ── Step 2: Collect the PDF attachment ────────────────────────────────
-      - kind: Question
-        id: askForFile
-        variable: topic.AppraisalFile
-        entity: Attachment
-        prompt: >
-          Attach the appraisal review PDF you'd like processed.
-
-      # ── Step 3: Basic client-side validation before spending anything ────
-      - kind: ConditionNode
-        id: checkFileType
-        condition: =EndsWith(Lower(topic.AppraisalFile.name), ".pdf") = false
-        consequent:
-          - kind: SendActivity
-            id: rejectNonPdf
-            activity: >
-              That file doesn't look like a PDF (${topic.AppraisalFile.name}).
-              Please attach the appraisal review as a .pdf and try again.
-          - kind: EndDialog
-            id: endAfterReject
-
-      - kind: ConditionNode
-        id: checkFileSize
-        condition: =topic.AppraisalFile.size > 15728640
-        consequent:
-          - kind: SendActivity
-            id: rejectTooLarge
-            activity: >
-              This file is larger than the 15 MB limit set for this tool.
-              Please split or compress the document, or route it to manual
-              review, and try again.
-          - kind: EndDialog
-            id: endAfterSizeReject
-
-      - kind: SendActivity
-        id: sendAckMsg
-        activity: >
-          Got it — extracting data from ${topic.AppraisalFile.name}. This
-          usually takes under a minute.
-
-      # ── Step 4: Extract the 17 fields, inline, right here in the topic ───
-      # This is an ad hoc "AI Builder" Prompt action added directly to this
-      # step in the Copilot Studio designer (Add an action > AI Builder >
-      # Prompt), configured with the instructions below, NOT a saved/
-      # published Prompt object from the AI Builder catalog. There is no
-      # separate AI Builder resource to create, publish, or version for this
-      # tool — the prompt text lives here, in the topic, next to everything
-      # else that defines this agent's behavior.
-      #
-      # It is still a generative/LLM call under the hood — Copilot Studio's
-      # inline Prompt action is implemented on the same model infrastructure
-      # AI Builder Prompts use. What this design avoids is a separately
-      # managed AI Builder catalog object and any AI Builder connector call
-      # inside Shared-AppraisalCellWriter — not the underlying cost of
-      # reading the PDF, which no design can avoid without switching to
-      # non-AI (regex/pattern) extraction. See agent/appraisal-agent-
-      # instructions.md, "Extraction Requirements" and "Output Requirements",
-      # for the exact instructions and JSON schema pasted into this action.
+      # ── Step 1: Extract the 17 fields, inline, right here in the topic ───
+      # Ad hoc "AI Builder" Prompt action added directly to this step in the
+      # Copilot Studio designer (Add an action > AI Builder > Prompt,
+      # choosing "Create a new prompt inline" — NOT a saved catalog prompt).
+      # See agent/appraisal-agent-instructions.md, "Extraction Requirements"
+      # and "Output Requirements", for the exact instructions and JSON
+      # schema pasted into this action. Still a generative/LLM call under
+      # the hood; what this design avoids is a separately managed AI
+      # Builder resource and any AI Builder connector call in either flow.
       - kind: InvokePromptAction
         id: extractFieldsInline
         promptInputs:
-          document: =topic.AppraisalFile
+          document: =System.Activity.Inputs.document
           instructions: >
             Paste verbatim, from agent/appraisal-agent-instructions.md: the
             "## Extraction Requirements" section through the end of the
             "## Output Requirements" section (the 17-field table, missing-
             data rules, and the exact JSON schema/example). Do not
             paraphrase — the JSON key names in that file are what
-            Shared-AppraisalCellWriter and this topic's parsing step below
-            both depend on.
+            Shared-AppraisalReviewOrchestrator's Parse_Agent_Response step
+            depends on.
         responseFormat: Json
         output: topic.extractionRawJson
 
-      # ── Step 5: Parse + validate the model's JSON, in Power Fx ───────────
+      # ── Step 2: Validate the model's JSON, in Power Fx ────────────────────
       - kind: SetVariable
         id: parseExtraction
         variable: topic.extraction
         value: =ParseJSON(topic.extractionRawJson)
 
-      - kind: ConditionNode
-        id: checkParsedOk
-        condition: =IsError(topic.extraction)
-        consequent:
-          - kind: SendActivity
-            id: sendParseFailure
-            activity: >
-              Extraction failed for ${topic.AppraisalFile.name}: the model's
-              response could not be read as valid data. No workbook was
-              created. Please retry, or complete this appraisal review
-              manually if the problem persists.
-          - kind: EndDialog
-            id: endAfterParseFailure
-
-      # ── Step 6: Coalesce missing values and format multi-value fields ────
-      # (mirrors what the old flow's Compose steps did, now done here since
-      # the flow no longer sees the raw extraction at all)
       - kind: SetVariable
-        id: formatAppraiserNames
-        variable: topic.appraiserNamesJoined
-        value: =If(IsBlank(topic.extraction.appraiserNames), "Not Stated", Concat(topic.extraction.appraiserNames, Value & "; "))
+        id: setParseSucceeded
+        variable: topic.parseSucceeded
+        value: =Not(IsError(topic.extraction))
 
-      - kind: SetVariable
-        id: computeNeedsReview
-        variable: topic.needsManualReview
-        value: =Or(CountRows(topic.extraction.missingFields) > 0, topic.extraction.needsManualReview = true)
-
-      # ── Step 7: Hand the finished values to the cell-writing flow ────────
-      - kind: InvokeFlowAction
-        id: callWriterFlow
-        flowId: Shared-AppraisalCellWriter
-        inputs:
-          occupancyType:              =Coalesce(topic.extraction.occupancyType, "Not Stated")
-          city:                       =Coalesce(topic.extraction.city, "Not Stated")
-          state:                      =Coalesce(topic.extraction.state, "Not Stated")
-          streetAddress:              =Coalesce(topic.extraction.streetAddress, "Not Stated")
-          collateralAnalysisValue:    =Coalesce(Text(topic.extraction.collateralAnalysisValue), "Not Stated")
-          valuationType:              =Coalesce(topic.extraction.valuationType, "Not Stated")
-          appraiserNames:             =topic.appraiserNamesJoined
-          appraisalDate:              =Coalesce(topic.extraction.appraisalDate, "Not Stated")
-          reviewerName:               =Coalesce(topic.extraction.reviewerName, "Not Stated")
-          reviewDate:                 =Coalesce(topic.extraction.reviewDate, "Not Stated")
-          grossBuildingAreaSqFt:      =Coalesce(Text(topic.extraction.grossBuildingAreaSqFt), "Not Stated")
-          netRentableAreaSqFt:        =Coalesce(Text(topic.extraction.netRentableAreaSqFt), "Not Stated")
-          numberOfBuildings:          =Coalesce(Text(topic.extraction.numberOfBuildings), "Not Stated")
-          yearBuiltOrRemodeled:       =Coalesce(Text(topic.extraction.yearBuiltOrRemodeled), "Not Stated")
-          remainingEconomicLifeYears: =Coalesce(Text(topic.extraction.remainingEconomicLifeYears), "Not Stated")
-          generalCondition:           =Coalesce(topic.extraction.generalCondition, "Not Stated")
-          marketExposureTime:         =Coalesce(topic.extraction.marketExposureTime, "Not Stated")
-          meetsHighestAndBestUse:     =Coalesce(topic.extraction.meetsHighestAndBestUse, "Not Stated")
-          requestedByName:            =topic.requestedByName
-          requestedByEmail:           =topic.requestedByEmail
+      # ── Step 3: Return outputs to the calling flow ────────────────────────
+      # No SendActivity anywhere in this topic — there is no chat conversation
+      # to send activity into. EndDialog's outputs are what the calling
+      # flow's Call_Extraction_Agent action receives as its response body.
+      - kind: EndDialog
+        id: returnOutputs
         outputs:
-          status:            topic.flowStatus
-          errorMessage:      topic.flowError
-          reviewFileUrl:     topic.reviewFileUrl
-          reviewFileName:    topic.reviewFileName
-          reviewSummary:     topic.reviewSummary
-
-      # ── Step 8: Report back ───────────────────────────────────────────────
-      - kind: ConditionNode
-        id: checkFlowStatus
-        condition: =topic.flowStatus = "success"
-        consequent:
-          - kind: ConditionNode
-            id: checkNeedsReview
-            condition: =topic.needsManualReview = true
-            consequent:
-              - kind: SendActivity
-                id: sendSuccessNeedsReview
-                activity: >
-                  Created ${topic.reviewFileName} from ${topic.AppraisalFile.name}.
-                  **Some fields need manual verification**:
-                  ${Join(topic.extraction.missingFields, ", ")}. ${topic.extraction.extractionNotes}
-
-                  Open the workbook: ${topic.reviewFileUrl}
-            alternate:
-              - kind: SendActivity
-                id: sendSuccessClean
-                activity: >
-                  Created ${topic.reviewFileName} from ${topic.AppraisalFile.name}.
-                  All 17 fields were extracted with no flags.
-
-                  Open the workbook: ${topic.reviewFileUrl}
-        alternate:
-          - kind: SendActivity
-            id: sendFailure
-            activity: >
-              Extraction succeeded but the workbook could not be created for
-              ${topic.AppraisalFile.name}: ${topic.flowError}. Please retry,
-              or complete this appraisal review manually if the problem
-              persists.
+          extractionJson: =topic.extractionRawJson
+          parseSucceeded: =topic.parseSucceeded

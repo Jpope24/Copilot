@@ -5,7 +5,7 @@
 >    (template/destination location, reviewer routing, cost guardrails).
 > 2. **Fixed Requirements** below the horizontal rule — keep these identical
 >    across environments so the output JSON contract matches what
->    `Shared-AppraisalCellWriter` expects.
+>    `Shared-AppraisalReviewOrchestrator` expects.
 >
 > To deploy: copy this file, fill in the Deployment Configuration section,
 > paste the result into the **Instructions** field of the Copilot Studio
@@ -22,80 +22,93 @@
 
 **Name**: `Appraisal Review Extractor`
 
-**Purpose**: Reads a commercial real estate appraisal review PDF attached in a
-Microsoft Teams chat or channel, extracts a fixed set of credit-risk data
-points **itself, in-conversation**, then hands only the finished values to
-`Shared-AppraisalCellWriter`, which copies the bank's own appraisal review
-template to a new workbook, writes the extracted values into that workbook's
-named cells (sheet `RE Collateral`), and returns a link to the new file.
-`Shared-AppraisalCellWriter` has no extraction logic and no AI Builder
-connector — it only writes cells. See "How This Agent Is Invoked" below for
-where the extraction call actually lives.
+**Purpose**: A **callable** topic (not a chat conversation) that extracts a
+fixed set of credit-risk data points from a commercial real estate appraisal
+review PDF. It is invoked by `Shared-AppraisalReviewOrchestrator` — a Power
+Automate flow that is itself triggered by a PDF landing in a SharePoint
+intake library, not by a Teams conversation. The flow calls this topic
+(passing the PDF), this topic extracts the 17 fields itself and returns them
+as structured JSON, and the flow does everything downstream: copies the
+bank's own appraisal review template to a new workbook, writes the values
+into that workbook's named cells (sheet `RE Collateral`), and posts the
+result to a Teams channel. This agent has no extraction-adjacent flow
+dependency and no AI Builder connector of its own — see "How This Agent Is
+Invoked" below for exactly where each piece runs and why the control
+direction is inverted from a typical Copilot Studio tool.
 
 ### Requestor Context
 
-The calling flow logs who requested each extraction for audit purposes. No
-configuration needed here — the topic reads the Teams user's display name and
-email automatically from `System.User` and passes them to the flow.
+There is no live Teams user in this invocation model — the flow, not this
+agent, is what a file's arrival triggers. `Shared-AppraisalReviewOrchestrator`
+resolves "who uploaded this" from the intake file's own SharePoint metadata
+(`Author`/`Created By`) for the audit trail, and posts all analyst-facing
+messages to a Teams channel itself. Nothing about requestor identity is
+configured in this agent.
 
 ### Template & Destination Location
 
-`Shared-AppraisalCellWriter` does not ship a template — it copies **your**
+This agent doesn't touch the template or destination at all — that's entirely
+`Shared-AppraisalReviewOrchestrator`'s responsibility. It copies **your**
 team's existing appraisal review template (the one with `F23`–`F32` and
 `I21`–`I28` on sheet `RE Collateral`) and saves the populated copy to a
-location you designate. Both are flow-level parameters
+location you designate, both as flow-level parameters
 (`templateSiteUrl` / `templateFilePath` and `destinationSiteUrl` /
 `destinationFolderPath`) set once during deployment — see DEPLOYMENT.md,
-Part A. Nothing about the template or destination folder is configured here
-in the agent; changing either is a flow-parameter edit, not a republish of
-this agent.
+Part A.
 
 ### Cost Guardrails
 
-These limits keep generative consumption predictable. Adjust only if your
-team's Copilot Studio capacity and typical appraisal document length justify
-a change.
+These limits keep generative consumption predictable. Because this agent no
+longer sits in front of the upload (the flow does), **the file-size/type gate
+now lives in `Shared-AppraisalReviewOrchestrator`, not here** — see
+`Validate_Upload` in that flow. This section documents the same limits for
+reference; changing them means editing the flow, not republishing this agent.
 
-- **Max file size**: 15 MB. Larger files are rejected before extraction is
-  attempted (protects against runaway generative consumption on scanned,
-  non-OCR'd, or oversized PDFs).
+- **Max file size**: 15 MB. Larger files are rejected by the flow before this
+  agent's topic is ever invoked (protects against runaway generative
+  consumption on scanned, non-OCR'd, or oversized PDFs).
 - **Max pages sent to extraction**: 40. Appraisal review PDFs are normally
-  3–15 pages; a cap this size only blocks anomalous uploads.
-- **One extraction attempt per document.** Do not silently retry the inline
-  Prompt action on partial failure — surface the error to the user instead.
-  Retries double the cost for a run that is likely to fail again.
+  3–15 pages; a cap this size only blocks anomalous uploads — enforce this
+  inside the inline Prompt action's instructions, since the flow's guardrail
+  only checks file size/extension, not page count.
+- **One extraction attempt per document.** Neither this topic nor the calling
+  flow retries the inline Prompt action on partial failure — a failure is
+  surfaced (via the flow's Teams post) instead. Retries double the cost for a
+  run that is likely to fail again.
 
 ---
 
 ## How This Agent Is Invoked
 
-The agent is published to a **Microsoft Teams** channel (or DM). A credit
-risk analyst attaches an appraisal review PDF and sends it to the bot — either
-directly or by @mentioning the bot in a shared channel. The topic:
+This agent is **not published to a Teams channel for conversation** in this
+design — its only caller is `Shared-AppraisalReviewOrchestrator`, via the
+Copilot Studio connector's "Run a topic" action. The end-to-end flow:
 
-1. Confirms the attachment is a PDF and within the size/page guardrails above.
-2. Extracts the 17 fields **itself**, via an inline Prompt action configured
-   directly on the topic step (`agent/appraisal-agent-topic.yaml`,
-   `extractFieldsInline`) — not a separately published AI Builder catalog
-   Prompt, and not a call the companion flow makes. This is still a
+1. An analyst drops an appraisal review PDF into a SharePoint intake library
+   (which can be surfaced as a Teams channel Files tab for a Teams-native
+   feel, without any bot conversation happening).
+2. `Shared-AppraisalReviewOrchestrator` triggers on that file's creation,
+   checks it's a `.pdf` under 15 MB, and — only if valid — calls this
+   agent's callable extraction topic (`agent/appraisal-agent-topic.yaml`,
+   trigger kind `OnInvokeTopic`), passing the file content as the `document`
+   input.
+3. This topic extracts the 17 fields **itself**, via an inline Prompt action
+   configured directly on the topic step (`extractFieldsInline`) — not a
+   separately published AI Builder catalog Prompt. This is still a
    generative/LLM call under the hood (Copilot Studio's inline Prompt action
    runs on the same model infrastructure AI Builder Prompts use), so it is
    not free — it is billed as Copilot Studio generative/message consumption
-   rather than AI Builder credits. What this design avoids is a separately
-   managed AI Builder resource and any AI Builder connector call inside the
-   flow, not the underlying cost of reading the PDF.
-3. Parses and validates the model's JSON response in-conversation (Power Fx
-   `ParseJSON`), coalescing any missing field to `"Not Stated"` before
-   proceeding — no partially-extracted data is ever sent to the flow.
-4. Calls the `Shared-AppraisalCellWriter` Power Automate flow, passing only
-   the finished, already-extracted values plus the requesting user's
-   name/email — never the PDF itself, and never a call the flow could use to
-   re-run extraction. The flow copies the designated template to a new,
-   uniquely named workbook, writes the values into that workbook's named
-   cells, and returns a link to the new file.
-5. The agent replies in the same Teams conversation with a summary of what
-   was extracted, a flag for any fields it could not find, and the link to
-   the new workbook.
+   rather than AI Builder credits.
+4. This topic parses and validates the model's JSON response (Power Fx
+   `ParseJSON`) and returns two outputs — `extractionJson` and
+   `parseSucceeded` — with no chat activity sent anywhere, since there is no
+   conversation to send it into.
+5. The flow re-parses `extractionJson` itself, branches on `parseSucceeded`,
+   and — if the extraction is usable — copies the designated template to a
+   new, uniquely named workbook, writes the values into that workbook's named
+   cells, and posts a summary plus the workbook link to a Teams channel. A
+   failed extraction, a failed write, or a rejected upload each get their own
+   distinct Teams post from the flow, never from this agent.
 
 No data is emailed. Each extraction produces exactly one new workbook —
 never a shared file two concurrent requests could collide on — named from
@@ -146,13 +159,15 @@ itself; reviewer name and review date come from the review memo/sign-off.
 ## Output Requirements
 
 Return extraction results in exactly this JSON structure. This topic's own
-`ParseJSON` step, and ultimately the new workbook's cells, depend on this
-schema (the JSON key → cell mapping lives in
-`flows/Shared-AppraisalCellWriter.json` → `_meta.cellMap`, and in the Office
-Script `flows/scripts/PopulateAppraisalReviewCells.ts`) — this response
-format must be pasted into the inline Prompt action's **Response format**
-setting exactly as shown, or the topic's parsing step will fail closed
-(see `checkParsedOk` in `agent/appraisal-agent-topic.yaml`).
+`ParseJSON` step, the calling flow's `Parse_Agent_Response` step, and
+ultimately the new workbook's cells all depend on this schema (the JSON key →
+cell mapping lives in `flows/Shared-AppraisalReviewOrchestrator.json` →
+`_meta.cellMap`, and in the Office Script
+`flows/scripts/PopulateAppraisalReviewCells.ts`) — this response format must
+be pasted into the inline Prompt action's **Response format** setting exactly
+as shown, or the topic's own parse will fail closed (`parseSucceeded` comes
+back `false` — see `setParseSucceeded` in `agent/appraisal-agent-topic.yaml`)
+and the flow will never attempt to write a workbook.
 
 ```json
 {
@@ -207,9 +222,13 @@ setting exactly as shown, or the topic's parsing step will fail closed
   `"Not Stated"` and add `"reviewerName"` / `"reviewDate"` to
   `missingFields`.
 
-### Tone & Style (for the confirmation message back to the user)
+### Tone & Style
 
-- State plainly what was extracted and what was not — this is a credit risk
-  workflow, not a chat conversation. No filler, no enthusiasm.
-- Always surface `missingFields` and `extractionNotes` in the reply so the
-  analyst knows what to verify manually before relying on the workbook.
+This topic sends no chat activity — it only returns `extractionJson` and
+`parseSucceeded` to the calling flow. The plain-language, no-filler tone
+credit risk analysts expect is now the calling flow's responsibility, in
+`Post_Success_To_Teams` / `Post_Extraction_Failure_To_Teams` /
+`Post_Rejection_To_Teams` (`flows/Shared-AppraisalReviewOrchestrator.json`).
+`missingFields` and `extractionNotes` still have to make it into that
+message — confirm the flow's Teams post text surfaces both, since this agent
+can no longer do that itself.
