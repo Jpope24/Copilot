@@ -28,6 +28,16 @@ Do not extend it into the real tool.
 
 ## Build steps
 
+> **Before you start:** two prerequisites surfaced by an actual test run —
+> (a) your Copilot Studio platform version must be **2025.7.2 or higher**
+> (**Settings → Session details**), since file forwarding to flows and
+> connectors didn't exist before that; and (b) **file upload capability is
+> off by default on a new agent** and must be enabled in the agent's
+> settings, or every attachment is rejected with `FileValidationError` and
+> an empty supported-content-types list. Handle both before step 3's
+> attachment work, or you'll be debugging a settings problem as if it were
+> a payload problem.
+
 ### 1. Create a throwaway agent
 
 1. Go to [copilotstudio.microsoft.com](https://copilotstudio.microsoft.com).
@@ -289,9 +299,51 @@ Also confirmed along the way, from building the topic:
   `IsBlank()`-style checks work on it. The production design has to
   account for having no file metadata available inside the topic.
 
-### Still open — question 1
+### Question 1 — first attempt rejected by file validation
 
-Read the `Post_Raw_Result_To_Teams` message from your run:
+A test run returned this as `lastResponse`:
+
+```
+The content type is null or empty. Skipping this file. Supported content
+types are . Error code: FileValidationError
+```
+
+The file never reached the topic — Copilot Studio's own file-validation
+layer rejected it first. `Supported content types are .` is an **empty
+list**, which matches the documented behavior that **file upload capability
+is off by default on a Copilot Studio agent and must be explicitly enabled
+in agent settings**. With nothing on the allowed list, every attachment is
+skipped regardless of payload shape.
+
+There is also a **platform version floor**: file forwarding to flows and
+connectors was introduced in Copilot Studio **2025.7.2**. Confirm your
+tenant meets it (**Settings → Session details**) before investigating
+anything else — below that version, this approach cannot work at all.
+
+**Before re-running:**
+
+1. Confirm platform version ≥ `2025.7.2.xxxx`.
+2. In the PoC agent's **Settings**, find the file/attachment upload toggle
+   and enable it, then **republish the agent**. Note what the toggle
+   actually says — if your version only offers an image-specific option
+   (`.png`, `.webp`, `.jpeg`, non-animated `.gif`), that is itself a
+   blocking finding: PDF attachments would not be supported through this
+   path in your version, and the design needs to change (see fallback
+   below).
+3. Re-run the flow with the same test PDF.
+
+**Fallback if attachments can't be enabled for PDFs:** don't send the file
+through the agent at all. Have the flow save the PDF to SharePoint and pass
+the agent only a **URL or path as a plain text parameter**, letting the
+extraction step reference or fetch it from there. Text parameters have none
+of these content-type restrictions, so this sidesteps file validation
+entirely — at the cost of the agent needing some way to read from that
+location.
+
+### Still open — question 1, after enabling uploads
+
+Once uploads are enabled and you re-run, read the
+`Post_Raw_Result_To_Teams` message:
 
 | What the message shows | What it means | Next step |
 |---|---|---|
