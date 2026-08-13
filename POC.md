@@ -151,9 +151,18 @@ Do not extend it into the real tool.
    - In the **Inputs** field, click into it, switch to **Expression** (a
      tab near the dynamic-content picker), and enter:
      ```
-     concat('data:application/pdf;base64,', triggerBody()?['testFile'])
+     concat('data:application/pdf;base64,', triggerBody()?['testFile']?['contentBytes'])
      ```
      Click **OK**/**Add**.
+     
+     **The `?['contentBytes']` part is essential.** Confirmed against a
+     real tenant: a File-type input on a manual trigger resolves to an
+     **object** (`{"contentBytes": "...", "name": "..."}`), not a plain
+     base64 string. Omitting it stringifies the whole object into the URI —
+     you get `data:application/pdf;base64,{"contentBytes":"JVBERi0x...` —
+     and the call fails with error code **`InvalidUriContent`**. Also keep
+     the prefix free of whitespace: `data: application/pdf` with a space
+     after the colon is an invalid URI.
 
    **Action 2 — Execute Agent and wait**
    - Click **+ New step**, search **"Copilot Studio"** in the connector
@@ -177,17 +186,27 @@ Do not extend it into the real tool.
      - Look for **"Show advanced options"** or an **Advanced parameters**
        expander at the bottom of this action's configuration panel. Click
        it open.
-     - Inside advanced options, look for an **Attachments** field. This
-       is the field the whole PoC exists to characterize — document
-       whatever you actually find:
-       - If it's a simple list/array builder: add one entry. Look for
-         sub-fields resembling **Name**, **Content type**, and
-         **Content**/**Content URL**. Set Name to the dynamic content
-         from the trigger's paired filename field (step 4 above), Content
-         type to `application/pdf`, and Content/Content URL to the output
-         of `Build_Data_Uri` (Action 1).
-       - If there's no such field at all anywhere in advanced options,
-         **stop here and note that as the PoC's primary finding** — it
+     - Inside advanced options, find the **Attachments** field.
+       Confirmed against a real tenant: it exposes **five** sub-fields —
+       `ContentType`, `ContentUrl`, `Content`, `Name`, `ThumbnailUrl`
+       (the Bot Framework Attachment shape). Fill them in as:
+
+       | Field | Value |
+       |---|---|
+       | **ContentType** | `application/pdf` (static text, not an expression) |
+       | **ContentUrl** | output of `Build_Data_Uri` (Action 1) |
+       | **Content** | *leave blank* — alternative to ContentUrl; populating both can confuse the parser |
+       | **Name** | `test.pdf` (hardcode for this test; some validators infer type from the extension) |
+       | **ThumbnailUrl** | *leave blank* |
+
+       **Save the flow, then reopen this action and confirm the values
+       actually persisted** — these fields have been observed coming back
+       blank after configuration, which produces a misleading
+       `FileValidationError` complaining that the content type is null or
+       empty when the real problem is that nothing was transmitted at all.
+
+       - If there's no Attachments field at all anywhere in advanced
+         options, **stop and note that as the PoC's primary finding** — it
          means this action doesn't support attachments the way secondhand
          blog research suggested, and the file-passing approach needs to
          be rethought entirely before any further building.

@@ -31,9 +31,9 @@
 
     "Build_Data_Uri": {
       "type": "Compose",
-      "description": "Bot Framework Attachment objects commonly reference inline content via a contentUrl data URI — this is a best guess at the format Execute Agent's attachments parameter expects, based on secondhand blog descriptions, not verified first-party docs. If the live designer's 'attachments' field wants something else (e.g. raw contentBytes instead of a data URI), build it that way instead and treat this Compose as wrong.",
+      "description": "CONFIRMED against a real tenant: a File-type input on a manual trigger resolves to an OBJECT with 'contentBytes' and 'name' properties — NOT a plain base64 string. Referencing triggerBody()?['testFile'] directly stringifies the whole object into the URI (producing 'data:application/pdf;base64,{\"contentBytes\":\"JVBERi0x...') and fails with error code InvalidUriContent. Drill into ?['contentBytes'] as below. Also note: no whitespace anywhere in the data URI prefix — 'data: application/pdf' with a space is invalid.",
       "runAfter": {},
-      "inputs": "@concat('data:application/pdf;base64,', triggerBody()?['testFile'])"
+      "inputs": "@concat('data:application/pdf;base64,', triggerBody()?['testFile']?['contentBytes'])"
     },
 
     "Execute_Agent_And_Wait": {
