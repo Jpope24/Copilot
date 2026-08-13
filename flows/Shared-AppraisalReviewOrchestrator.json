@@ -2,13 +2,14 @@
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "_meta": {
     "flowName": "Shared-AppraisalReviewOrchestrator",
-    "description": "An Instant cloud flow with a File-type input on its 'Manually trigger a flow' trigger — this is what makes it selectable as a menu item directly from Teams' built-in flow launcher (the Workflows/Power Automate icon in the channel message compose box), with an actual file-upload control for the PDF. The analyst never leaves the compose box: pick this flow, upload the PDF, run it. This flow validates the upload, calls the 'Appraisal Review Extractor' agent's callable extraction topic to do the field extraction, parses and validates the agent's response, copies the bank's own appraisal review template to a new workbook, writes the extracted values into that workbook's named cells (sheet 'RE Collateral'), and posts the result to a designated Teams channel.",
-    "version": "6.0.0",
-    "invokedBy": "Teams' built-in Power Automate/Workflows flow launcher, via a File-type input on the flow's 'Manually trigger a flow' trigger — not by Copilot Studio, a SharePoint event, or a specific existing message",
+    "description": "An Instant cloud flow with a File-type input on its 'Manually trigger a flow' trigger — this is what makes it selectable as a menu item directly from Teams' built-in flow launcher (the Workflows/Power Automate icon in the channel message compose box), with an actual file-upload control for the PDF. There is no Copilot Studio agent anywhere in this design. The flow itself: validates the upload, extracts 17 credit-risk data points via an AI Builder Prompt action, copies the bank's own appraisal review template to a new workbook, writes the extracted values into that workbook's named cells (sheet 'RE Collateral'), and posts the result to a Teams channel.",
+    "version": "7.0.0",
+    "invokedBy": "Teams' built-in Power Automate/Workflows flow launcher, via a File-type input on the flow's 'Manually trigger a flow' trigger",
+    "designHistory": "This flow went through several rejected designs before landing here: (1) Copilot Studio agent calling this flow via the native child-flow trigger — blocked by a tenant DLP policy on shared_powervirtualagents. (2) Inverted to this flow calling a Copilot Studio agent's callable topic via 'Execute Agent and wait', with extraction done inside the agent — technically worked for text round-tripping, but file attachments sent via Execute Agent's advanced parameters never resolved inside the topic (a Question node's File entity only slot-fills from a SUBSEQUENT turn, and Execute Agent delivers the file in the same single turn as the triggering message — a structural mismatch, not a config problem). (3) This version: no agent at all. Extraction happens via an AI Builder Prompt action called directly from this flow, on the file this flow's own trigger already received — sidesteps both the DLP-blocked connector and the attachment-into-topic dead end entirely, since nothing ever needs to hand a file to a second system.",
     "connectors": [
       "Microsoft Teams (shared_teams) — Post message in a channel, for the result notification",
+      "AI Builder (shared_aibuilder) — Predict with a custom Prompt (see EXTRACTION-SPEC.md and DEPLOYMENT.md Part B) — the only generative/LLM call in this design",
       "SharePoint (shared_sharepointonline) — Copy file, Get file properties, Create sharing link",
-      "Microsoft Copilot Studio (shared_CopilotStudio or your tenant's equivalent connector id) — Run a topic, to call the agent's callable extraction topic. VERIFY THIS CONNECTOR IS NOT GROUPED WITH shared_powervirtualagents IN YOUR DLP POLICY before relying on this design.",
       "Excel Online (Business) (shared_excelonlinebusiness) — Run script, to populate the named cells listed in _meta.cellMap"
     ],
     "cellMap": {
@@ -32,32 +33,31 @@
       "I28": "meetsHighestAndBestUse"
     },
     "costNotes": [
-      "This flow still makes no AI Builder connector call of any kind — the LLM call happens inside the agent's callable topic (an inline Prompt action, see agent/appraisal-agent-topic.yaml). This flow's own connector list is Teams + SharePoint + Copilot Studio + Excel Online.",
-      "The manual trigger only fires when an analyst explicitly launches this flow from Teams and uploads a file — there is no automatic trigger surface (no folder to watch, no channel to monitor for every message), so generative spend stays tied to deliberate requests only.",
-      "Validate_Upload (filename and approximate size) runs before Call_Extraction_Agent, so a non-PDF or oversized upload never reaches the agent.",
-      "One Copilot Studio topic invocation per valid, explicitly-launched run is the variable cost — the underlying LLM cost of reading the PDF has not changed from earlier versions of this design, only how the flow is started and where it reports back.",
-      "Cell population still uses the standard Excel Online (Business) 'Run script' (Office Scripts) action — no Premium connector, no custom Azure Function.",
-      "This version still creates one new file per review, copied from your existing template, for the same reasons as before (matches the bank's existing review-package convention)."
+      "No Copilot Studio agent, no shared_powervirtualagents connector, no shared_CopilotStudio connector anywhere in this design — the DLP block that drove the two previous redesigns simply does not apply here. There is nothing left to verify against that policy.",
+      "Extraction runs on a custom AI Builder Prompt, reusing AI Builder capacity your Power Platform/Copilot Studio licensing already includes rather than a separately provisioned Azure OpenAI or Document Intelligence resource. This is the one recurring variable cost — see DEPLOYMENT.md's cost rationale for real, tenant-measured credit consumption rather than an estimate.",
+      "The manual trigger only fires when an analyst explicitly launches this flow from Teams and uploads a file — no automatic trigger surface (no folder to watch, no channel to monitor), so spend stays tied to deliberate requests only.",
+      "Validate_Upload (filename and approximate size) runs before Extract_With_AI_Builder, so a non-PDF or oversized upload never reaches AI Builder.",
+      "Cell population uses the standard Excel Online (Business) 'Run script' (Office Scripts) action — no Premium connector, no custom Azure Function.",
+      "One new file per review, copied from the existing template, matching the bank's existing review-package convention — the template copy and sharing-link creation are the per-run non-generative costs this design accepts.",
+      "No retry on a failed extraction — a failure is posted to Teams immediately instead of silently doubling AI Builder credit spend on a document likely to fail again."
     ]
   },
 
   "trigger": {
     "type": "Request",
     "kind": "Button",
-    "description": "'Manually trigger a flow' (Instant cloud flow) with a File-type input. This is the trigger type Teams' built-in Power Automate/Workflows flow launcher surfaces for file upload, and does not use the shared_powervirtualagents connector. The File input's exact JSON representation is UI-configured in the designer (Add an input > File) rather than something to paste literally from this reference — see DEPLOYMENT.md, Part E.",
+    "description": "'Manually trigger a flow' (Instant cloud flow) with a File-type input. This is the trigger type Teams' built-in Power Automate/Workflows flow launcher surfaces for file upload. CONFIRMED against a real tenant: a File-type input resolves to an OBJECT — {\"contentBytes\": \"<base64>\", \"name\": \"<filename>\"} — not a plain base64 string and not two separate flat inputs. Build the File input via the designer's 'Add an input > File' picker rather than pasting this schema literally.",
     "inputs": {
       "schema": {
         "type": "object",
-        "required": ["document", "documentFileName"],
+        "required": ["document"],
         "properties": {
           "document": {
-            "type": "string",
-            "format": "byte",
-            "description": "The uploaded PDF's content, base64-encoded — configured as a 'File' input in the designer, which auto-pairs with a text field for the file name."
-          },
-          "documentFileName": {
-            "type": "string",
-            "description": "Auto-generated companion field the designer creates alongside a File input, holding the uploaded file's original name."
+            "type": "object",
+            "properties": {
+              "contentBytes": { "type": "string", "format": "byte" },
+              "name":         { "type": "string" }
+            }
           }
         }
       }
@@ -76,7 +76,7 @@
       "type": "Compose",
       "description": "Filename check is exact; the size check is an approximation (base64 encoding inflates byte count by roughly 4/3, so this multiplies by 0.75 to estimate original bytes) — confirm empirically against your tenant's actual trigger output before trusting the 15 MB boundary precisely.",
       "runAfter": { "Init_RunTimestamp": ["Succeeded"] },
-      "inputs": "@and(endsWith(toLower(coalesce(triggerBody()?['documentFileName'], '')), '.pdf'), less(mul(length(triggerBody()?['document']), 0.75), 15728640))"
+      "inputs": "@and(endsWith(toLower(coalesce(triggerBody()?['document']?['name'], '')), '.pdf'), less(mul(length(triggerBody()?['document']?['contentBytes']), 0.75), 15728640))"
     },
 
     "Condition_Is_Valid": {
@@ -85,27 +85,27 @@
       "expression": { "and": [ { "equals": [ "@outputs('Validate_Upload')", true ] } ] },
       "actions": {
 
-        "Call_Extraction_Agent": {
+        "Extract_With_AI_Builder": {
           "type": "ApiConnection",
-          "description": "Calls the 'Appraisal Review Extractor' agent's callable extraction topic (agent/appraisal-agent-topic.yaml, trigger kind OnInvokeTopic) via the Copilot Studio connector's 'Run a topic' action — a different connector than the DLP-blocked 'When Copilot Studio calls a flow' trigger this design intentionally avoids.",
+          "description": "Calls the custom AI Builder Prompt 'Appraisal Review Field Extraction' (created once in AI Builder > Prompts — see EXTRACTION-SPEC.md and DEPLOYMENT.md Part B). No Copilot Studio agent or bot is involved.",
           "runAfter": {},
           "inputs": {
             "host": {
-              "connection": { "name": "@parameters('$connections')['shared_CopilotStudio']['connectionId']" }
+              "connection": { "name": "@parameters('$connections')['shared_aibuilder']['connectionId']" }
             },
             "method": "post",
-            "path": "/environments/@{encodeURIComponent(parameters('environmentId'))}/bots/@{encodeURIComponent(parameters('appraisalAgentId'))}/topics/@{encodeURIComponent(parameters('extractionTopicName'))}/run",
+            "path": "/apis/shared_aibuilder/v1.0/prompts/@{parameters('aiBuilderPromptId')}/predict",
             "body": {
-              "document": "@base64ToBinary(triggerBody()?['document'])"
+              "document": "@triggerBody()?['document']?['contentBytes']"
             }
           }
         },
 
-        "Parse_Agent_Response": {
+        "Parse_Extraction_Result": {
           "type": "ParseJson",
-          "runAfter": { "Call_Extraction_Agent": ["Succeeded"] },
+          "runAfter": { "Extract_With_AI_Builder": ["Succeeded"] },
           "inputs": {
-            "content": "@body('Call_Extraction_Agent')?['extractionJson']",
+            "content": "@body('Extract_With_AI_Builder')",
             "schema": {
               "type": "object",
               "properties": {
@@ -135,156 +135,126 @@
           }
         },
 
-        "Condition_Extraction_Ok": {
-          "type": "If",
-          "runAfter": { "Parse_Agent_Response": ["Succeeded"] },
-          "expression": { "and": [ { "equals": [ "@body('Call_Extraction_Agent')?['parseSucceeded']", true ] } ] },
-          "actions": {
+        "Format_Appraiser_Names": {
+          "type": "Compose",
+          "runAfter": { "Parse_Extraction_Result": ["Succeeded"] },
+          "inputs": "@join(coalesce(body('Parse_Extraction_Result')?['appraiserNames'], createArray('Not Stated')), '; ')"
+        },
 
-            "Format_Appraiser_Names": {
-              "type": "Compose",
-              "runAfter": {},
-              "inputs": "@join(coalesce(body('Parse_Agent_Response')?['appraiserNames'], createArray('Not Stated')), '; ')"
+        "Format_City_State": {
+          "type": "Compose",
+          "runAfter": { "Format_Appraiser_Names": ["Succeeded"] },
+          "inputs": "@concat(coalesce(body('Parse_Extraction_Result')?['city'], 'Not Stated'), ', ', coalesce(body('Parse_Extraction_Result')?['state'], 'Not Stated'))"
+        },
+
+        "Build_Destination_File_Name": {
+          "type": "Compose",
+          "runAfter": { "Format_City_State": ["Succeeded"] },
+          "inputs": "@concat('Appraisal Review - ', replace(replace(replace(replace(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address Not Stated'), '/', '-'), '\\', '-'), ':', '-'), '?', ''), ' - ', formatDateTime(utcNow(), 'yyyyMMdd-HHmmss'), '.xlsx')"
+        },
+
+        "Copy_Template_To_New_File": {
+          "type": "ApiConnection",
+          "runAfter": { "Build_Destination_File_Name": ["Succeeded"] },
+          "inputs": {
+            "host": {
+              "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
             },
+            "method": "post",
+            "path": "/copyfile",
+            "body": {
+              "sourceSiteUrl":      "@parameters('templateSiteUrl')",
+              "sourceFilePath":     "@parameters('templateFilePath')",
+              "destinationSiteUrl": "@parameters('destinationSiteUrl')",
+              "destinationFolder":  "@parameters('destinationFolderPath')",
+              "destinationFileName": "@outputs('Build_Destination_File_Name')",
+              "ifFileAlreadyExists": "rename"
+            }
+          }
+        },
 
-            "Format_City_State": {
-              "type": "Compose",
-              "runAfter": { "Format_Appraiser_Names": ["Succeeded"] },
-              "inputs": "@concat(coalesce(body('Parse_Agent_Response')?['city'], 'Not Stated'), ', ', coalesce(body('Parse_Agent_Response')?['state'], 'Not Stated'))"
+        "Get_New_File_Properties": {
+          "type": "ApiConnection",
+          "runAfter": { "Copy_Template_To_New_File": ["Succeeded"] },
+          "inputs": {
+            "host": {
+              "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
             },
+            "method": "get",
+            "path": "/getfilebypath",
+            "queries": {
+              "siteUrl": "@parameters('destinationSiteUrl')",
+              "filePath": "@body('Copy_Template_To_New_File')?['destinationFilePath']"
+            }
+          }
+        },
 
-            "Build_Destination_File_Name": {
-              "type": "Compose",
-              "runAfter": { "Format_City_State": ["Succeeded"] },
-              "inputs": "@concat('Appraisal Review - ', replace(replace(replace(replace(coalesce(body('Parse_Agent_Response')?['streetAddress'], 'Address Not Stated'), '/', '-'), '\\', '-'), ':', '-'), '?', ''), ' - ', formatDateTime(utcNow(), 'yyyyMMdd-HHmmss'), '.xlsx')"
+        "Populate_Review_Cells": {
+          "type": "ApiConnection",
+          "runAfter": { "Get_New_File_Properties": ["Succeeded"] },
+          "inputs": {
+            "host": {
+              "connection": { "name": "@parameters('$connections')['shared_excelonlinebusiness']['connectionId']" }
             },
-
-            "Copy_Template_To_New_File": {
-              "type": "ApiConnection",
-              "runAfter": { "Build_Destination_File_Name": ["Succeeded"] },
-              "inputs": {
-                "host": {
-                  "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
-                },
-                "method": "post",
-                "path": "/copyfile",
-                "body": {
-                  "sourceSiteUrl":      "@parameters('templateSiteUrl')",
-                  "sourceFilePath":     "@parameters('templateFilePath')",
-                  "destinationSiteUrl": "@parameters('destinationSiteUrl')",
-                  "destinationFolder":  "@parameters('destinationFolderPath')",
-                  "destinationFileName": "@outputs('Build_Destination_File_Name')",
-                  "ifFileAlreadyExists": "rename"
-                }
-              }
-            },
-
-            "Get_New_File_Properties": {
-              "type": "ApiConnection",
-              "runAfter": { "Copy_Template_To_New_File": ["Succeeded"] },
-              "inputs": {
-                "host": {
-                  "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
-                },
-                "method": "get",
-                "path": "/getfilebypath",
-                "queries": {
-                  "siteUrl": "@parameters('destinationSiteUrl')",
-                  "filePath": "@body('Copy_Template_To_New_File')?['destinationFilePath']"
-                }
-              }
-            },
-
-            "Populate_Review_Cells": {
-              "type": "ApiConnection",
-              "runAfter": { "Get_New_File_Properties": ["Succeeded"] },
-              "inputs": {
-                "host": {
-                  "connection": { "name": "@parameters('$connections')['shared_excelonlinebusiness']['connectionId']" }
-                },
-                "method": "post",
-                "path": "/drives/@{encodeURIComponent(body('Get_New_File_Properties')?['driveId'])}/files/@{encodeURIComponent(body('Get_New_File_Properties')?['itemId'])}/runscript",
-                "body": {
-                  "scriptName": "PopulateAppraisalReviewCells",
-                  "scriptParameters": {
-                    "occupancyType":              "@coalesce(body('Parse_Agent_Response')?['occupancyType'], 'Not Stated')",
-                    "cityState":                  "@outputs('Format_City_State')",
-                    "streetAddress":              "@coalesce(body('Parse_Agent_Response')?['streetAddress'], 'Not Stated')",
-                    "collateralAnalysisValue":    "@string(coalesce(body('Parse_Agent_Response')?['collateralAnalysisValue'], 'Not Stated'))",
-                    "valuationType":              "@coalesce(body('Parse_Agent_Response')?['valuationType'], 'Not Stated')",
-                    "appraiserNames":             "@outputs('Format_Appraiser_Names')",
-                    "appraisalDate":              "@coalesce(body('Parse_Agent_Response')?['appraisalDate'], 'Not Stated')",
-                    "reviewerName":               "@coalesce(body('Parse_Agent_Response')?['reviewerName'], 'Not Stated')",
-                    "reviewDate":                 "@coalesce(body('Parse_Agent_Response')?['reviewDate'], 'Not Stated')",
-                    "grossBuildingAreaSqFt":      "@string(coalesce(body('Parse_Agent_Response')?['grossBuildingAreaSqFt'], 'Not Stated'))",
-                    "netRentableAreaSqFt":        "@string(coalesce(body('Parse_Agent_Response')?['netRentableAreaSqFt'], 'Not Stated'))",
-                    "numberOfBuildings":          "@string(coalesce(body('Parse_Agent_Response')?['numberOfBuildings'], 'Not Stated'))",
-                    "yearBuiltOrRemodeled":       "@string(coalesce(body('Parse_Agent_Response')?['yearBuiltOrRemodeled'], 'Not Stated'))",
-                    "remainingEconomicLifeYears": "@string(coalesce(body('Parse_Agent_Response')?['remainingEconomicLifeYears'], 'Not Stated'))",
-                    "generalCondition":           "@coalesce(body('Parse_Agent_Response')?['generalCondition'], 'Not Stated')",
-                    "marketExposureTime":         "@coalesce(body('Parse_Agent_Response')?['marketExposureTime'], 'Not Stated')",
-                    "meetsHighestAndBestUse":     "@coalesce(body('Parse_Agent_Response')?['meetsHighestAndBestUse'], 'Not Stated')"
-                  }
-                }
-              }
-            },
-
-            "Create_Sharing_Link": {
-              "type": "ApiConnection",
-              "runAfter": { "Populate_Review_Cells": ["Succeeded"] },
-              "inputs": {
-                "host": {
-                  "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
-                },
-                "method": "post",
-                "path": "/createsharinglink",
-                "body": {
-                  "siteUrl":  "@parameters('destinationSiteUrl')",
-                  "driveId":  "@body('Get_New_File_Properties')?['driveId']",
-                  "itemId":   "@body('Get_New_File_Properties')?['itemId']",
-                  "linkType": "view",
-                  "linkScope": "organization"
-                }
-              }
-            },
-
-            "Post_Success_To_Teams": {
-              "type": "ApiConnection",
-              "description": "Posts to the designated notification channel (parameters.notificationChannelId) — unlike the previous 'For a selected message' version, this trigger is not bound to any specific existing message to reply into, since the analyst launched the flow from the compose box's upload form rather than acting on a message they'd already posted.",
-              "runAfter": { "Create_Sharing_Link": ["Succeeded"] },
-              "inputs": {
-                "host": {
-                  "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
-                },
-                "method": "post",
-                "path": "/v3/beta/teams/conversation/message",
-                "body": {
-                  "poster": "Flow bot",
-                  "location": "@parameters('notificationChannelId')",
-                  "body": "@concat('Created ', outputs('Build_Destination_File_Name'), ' from ', triggerBody()?['documentFileName'], '. ', if(equals(body('Parse_Agent_Response')?['needsManualReview'], true), concat('Needs manual verification: ', join(coalesce(body('Parse_Agent_Response')?['missingFields'], createArray()), ', '), '. ', coalesce(body('Parse_Agent_Response')?['extractionNotes'], '')), 'All 17 fields were extracted with no flags.'), ' Open the workbook: ', body('Create_Sharing_Link')?['link'])"
-                }
+            "method": "post",
+            "path": "/drives/@{encodeURIComponent(body('Get_New_File_Properties')?['driveId'])}/files/@{encodeURIComponent(body('Get_New_File_Properties')?['itemId'])}/runscript",
+            "body": {
+              "scriptName": "PopulateAppraisalReviewCells",
+              "scriptParameters": {
+                "occupancyType":              "@coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'Not Stated')",
+                "cityState":                  "@outputs('Format_City_State')",
+                "streetAddress":              "@coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Not Stated')",
+                "collateralAnalysisValue":    "@string(coalesce(body('Parse_Extraction_Result')?['collateralAnalysisValue'], 'Not Stated'))",
+                "valuationType":              "@coalesce(body('Parse_Extraction_Result')?['valuationType'], 'Not Stated')",
+                "appraiserNames":             "@outputs('Format_Appraiser_Names')",
+                "appraisalDate":              "@coalesce(body('Parse_Extraction_Result')?['appraisalDate'], 'Not Stated')",
+                "reviewerName":               "@coalesce(body('Parse_Extraction_Result')?['reviewerName'], 'Not Stated')",
+                "reviewDate":                 "@coalesce(body('Parse_Extraction_Result')?['reviewDate'], 'Not Stated')",
+                "grossBuildingAreaSqFt":      "@string(coalesce(body('Parse_Extraction_Result')?['grossBuildingAreaSqFt'], 'Not Stated'))",
+                "netRentableAreaSqFt":        "@string(coalesce(body('Parse_Extraction_Result')?['netRentableAreaSqFt'], 'Not Stated'))",
+                "numberOfBuildings":          "@string(coalesce(body('Parse_Extraction_Result')?['numberOfBuildings'], 'Not Stated'))",
+                "yearBuiltOrRemodeled":       "@string(coalesce(body('Parse_Extraction_Result')?['yearBuiltOrRemodeled'], 'Not Stated'))",
+                "remainingEconomicLifeYears": "@string(coalesce(body('Parse_Extraction_Result')?['remainingEconomicLifeYears'], 'Not Stated'))",
+                "generalCondition":           "@coalesce(body('Parse_Extraction_Result')?['generalCondition'], 'Not Stated')",
+                "marketExposureTime":         "@coalesce(body('Parse_Extraction_Result')?['marketExposureTime'], 'Not Stated')",
+                "meetsHighestAndBestUse":     "@coalesce(body('Parse_Extraction_Result')?['meetsHighestAndBestUse'], 'Not Stated')"
               }
             }
-          },
-          "else": {
-            "actions": {
-              "Post_Extraction_Failure_To_Teams": {
-                "type": "ApiConnection",
-                "description": "The agent's own topic-level parse check (parseSucceeded output) failed. No file is created in this branch.",
-                "runAfter": {},
-                "inputs": {
-                  "host": {
-                    "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
-                  },
-                  "method": "post",
-                  "path": "/v3/beta/teams/conversation/message",
-                  "body": {
-                    "poster": "Flow bot",
-                    "location": "@parameters('notificationChannelId')",
-                    "body": "@concat('Extraction failed for ', triggerBody()?['documentFileName'], ': the agent could not produce valid data from this document. No workbook was created. Route it to manual review, or re-run this workflow if this looks like a transient issue.')"
-                  }
-                }
-              }
+          }
+        },
+
+        "Create_Sharing_Link": {
+          "type": "ApiConnection",
+          "runAfter": { "Populate_Review_Cells": ["Succeeded"] },
+          "inputs": {
+            "host": {
+              "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" }
+            },
+            "method": "post",
+            "path": "/createsharinglink",
+            "body": {
+              "siteUrl":  "@parameters('destinationSiteUrl')",
+              "driveId":  "@body('Get_New_File_Properties')?['driveId']",
+              "itemId":   "@body('Get_New_File_Properties')?['itemId']",
+              "linkType": "view",
+              "linkScope": "organization"
+            }
+          }
+        },
+
+        "Post_Success_To_Teams": {
+          "type": "ApiConnection",
+          "runAfter": { "Create_Sharing_Link": ["Succeeded"] },
+          "inputs": {
+            "host": {
+              "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
+            },
+            "method": "post",
+            "path": "/v3/beta/teams/conversation/message",
+            "body": {
+              "poster": "Flow bot",
+              "location": "@parameters('notificationChannelId')",
+              "body": "@concat('Created ', outputs('Build_Destination_File_Name'), ' from ', triggerBody()?['document']?['name'], '. ', if(equals(body('Parse_Extraction_Result')?['needsManualReview'], true), concat('Needs manual verification: ', join(coalesce(body('Parse_Extraction_Result')?['missingFields'], createArray()), ', '), '. ', coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')), 'All 17 fields were extracted with no flags.'), ' Open the workbook: ', body('Create_Sharing_Link')?['link'])"
             }
           }
         }
@@ -293,7 +263,7 @@
         "actions": {
           "Post_Rejection_To_Teams": {
             "type": "ApiConnection",
-            "description": "File failed the .pdf/15 MB check. The agent was never called — no generative cost was spent on this upload.",
+            "description": "File failed the .pdf/15 MB check. AI Builder was never called — no credits were spent on this upload.",
             "runAfter": {},
             "inputs": {
               "host": {
@@ -304,7 +274,7 @@
               "body": {
                 "poster": "Flow bot",
                 "location": "@parameters('notificationChannelId')",
-                "body": "@concat(coalesce(triggerBody()?['documentFileName'], 'The uploaded file'), ' was not processed — it must be a .pdf under 15 MB. Please fix and run this workflow again.')"
+                "body": "@concat(coalesce(triggerBody()?['document']?['name'], 'The uploaded file'), ' was not processed — it must be a .pdf under 15 MB. Please fix and run this workflow again.')"
               }
             }
           }
@@ -312,15 +282,49 @@
       }
     },
 
-    "Handle_Write_Failure": {
-      "type": "Compose",
-      "description": "Fires if the file copy, cell population, or sharing-link step failed after a successful extraction — most commonly a misconfigured templateFilePath/destinationFolderPath parameter, the Office Script not present on the copied file, or a sheet name mismatch ('RE Collateral').",
+    "Handle_Extraction_Failure": {
+      "type": "ApiConnection",
+      "description": "Fires if the AI Builder Predict call or the JSON parse fails — most commonly a scanned/non-OCR'd PDF the prompt could not read, or a malformed prompt response. No file is created in this branch.",
       "runAfter": {
-        "Condition_Is_Valid": ["Failed", "TimedOut"]
+        "Extract_With_AI_Builder":  ["Failed", "TimedOut"],
+        "Parse_Extraction_Result":  ["Failed"]
       },
+      "runtimeConfiguration": { "runAfterConfiguration": { "matchStrategy": "AtLeastOne" } },
       "inputs": {
-        "status": "error",
-        "errorMessage": "The extracted data could not be written to a new workbook, or the run failed before extraction completed. Check the flow's run history for the specific failed action."
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/v3/beta/teams/conversation/message",
+        "body": {
+          "poster": "Flow bot",
+          "location": "@parameters('notificationChannelId')",
+          "body": "@concat('Extraction failed for ', coalesce(triggerBody()?['document']?['name'], 'the uploaded file'), ': ', coalesce(actions('Extract_With_AI_Builder')?['error']?['message'], 'the document could not be read — it may be a scanned image without a text layer.'), ' No workbook was created.')"
+        }
+      }
+    },
+
+    "Handle_Write_Failure": {
+      "type": "ApiConnection",
+      "description": "Fires if extraction succeeded but the file copy, cell population, or sharing-link step failed — most commonly a misconfigured templateFilePath/destinationFolderPath parameter, the Office Script not present on the copied file, or a sheet name mismatch ('RE Collateral').",
+      "runAfter": {
+        "Copy_Template_To_New_File": ["Failed", "TimedOut"],
+        "Get_New_File_Properties":   ["Failed", "TimedOut"],
+        "Populate_Review_Cells":     ["Failed", "TimedOut"],
+        "Create_Sharing_Link":       ["Failed", "TimedOut"]
+      },
+      "runtimeConfiguration": { "runAfterConfiguration": { "matchStrategy": "AtLeastOne" } },
+      "inputs": {
+        "host": {
+          "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
+        },
+        "method": "post",
+        "path": "/v3/beta/teams/conversation/message",
+        "body": {
+          "poster": "Flow bot",
+          "location": "@parameters('notificationChannelId')",
+          "body": "@concat('Data was extracted from ', coalesce(triggerBody()?['document']?['name'], 'the uploaded file'), ' but the workbook could not be created: ', coalesce(actions('Populate_Review_Cells')?['error']?['message'], actions('Copy_Template_To_New_File')?['error']?['message'], actions('Get_New_File_Properties')?['error']?['message'], actions('Create_Sharing_Link')?['error']?['message'], 'check the flow run history for the specific failed action.'))"
+        }
       }
     }
   },
@@ -330,20 +334,10 @@
       "defaultValue": {},
       "type": "Object"
     },
-    "environmentId": {
-      "defaultValue": "REPLACE_WITH_YOUR_POWER_PLATFORM_ENVIRONMENT_ID",
+    "aiBuilderPromptId": {
+      "defaultValue": "REPLACE_WITH_AI_BUILDER_PROMPT_GUID",
       "type": "String",
-      "description": "The Power Platform environment ID that hosts the Appraisal Review Extractor agent."
-    },
-    "appraisalAgentId": {
-      "defaultValue": "REPLACE_WITH_APPRAISAL_AGENT_BOT_ID",
-      "type": "String",
-      "description": "The bot/agent ID of 'Appraisal Review Extractor' in Copilot Studio."
-    },
-    "extractionTopicName": {
-      "defaultValue": "Extract Appraisal Fields",
-      "type": "String",
-      "description": "The name of the callable extraction topic within the agent (agent/appraisal-agent-topic.yaml)."
+      "description": "GUID of the 'Appraisal Review Field Extraction' AI Builder Prompt, created once per environment (see DEPLOYMENT.md Part B)."
     },
     "templateSiteUrl": {
       "defaultValue": "REPLACE_WITH_TEMPLATE_SHAREPOINT_SITE_URL",
