@@ -193,12 +193,17 @@ Do not extend it into the real tool.
    - **+ New step** → **Compose**. Rename to `Attempt_Parse_LastResponse`.
    - Inputs: switch to **Expression**, enter:
      ```
-     json(body('Execute Agent and wait')?['lastResponse'])
+     json(outputs('Compose_Raw_Response')?['lastResponse'])
      ```
-     Use the exact action name shown in your flow for `Execute Agent and
-     wait` inside the `body(...)` reference — if you renamed the action
-     card, use that name instead (with underscores replacing spaces, as
-     Power Automate does internally).
+     Note this references **`Compose_Raw_Response` (Action 3)**, not the
+     Execute Agent and wait connector action directly — `outputs()`, not
+     `body()`, since `Compose_Raw_Response` is a Compose step. Building off
+     the already-resolved Compose output avoids re-typing the connector
+     action's name (which contains spaces and is easy to get wrong by
+     hand — if you type the expression instead of using the picker, watch
+     for smart/curly quotes if you ever copy-paste this text from a
+     rendered document; they'll break the parser with a generic "structure"
+     error that has nothing to do with the logic itself).
 
    **Action 5 — Teams: raw result**
    - **+ New step** → search **"Teams"** → **Post message in a channel**

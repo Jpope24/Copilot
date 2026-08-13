@@ -68,9 +68,9 @@
 
     "Attempt_Parse_LastResponse": {
       "type": "Compose",
-      "description": "Best-effort attempt at the pattern found in secondhand research: json(body(...)?['lastResponse']). If this action fails in run history, that itself is informative — it means either the field isn't called lastResponse, or its content wasn't valid JSON text. Check Compose_Raw_Response's output in that case rather than trying to fix this expression blindly.",
+      "description": "Best-effort attempt at the pattern found in secondhand research: json(...?['lastResponse']). Deliberately built off Compose_Raw_Response's already-resolved output (outputs(), since that's a Compose action) rather than re-referencing the Execute Agent and wait connector action a second time by name — one less place to introduce a typo. If this action fails in run history, that itself is informative — it means either the field isn't called lastResponse, or its content wasn't valid JSON text. Check Compose_Raw_Response's output in that case rather than trying to fix this expression blindly.",
       "runAfter": { "Compose_Raw_Response": ["Succeeded"] },
-      "inputs": "@json(body('Execute_Agent_And_Wait')?['lastResponse'])"
+      "inputs": "@json(outputs('Compose_Raw_Response')?['lastResponse'])"
     },
 
     "Post_Raw_Result_To_Teams": {
