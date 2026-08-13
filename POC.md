@@ -91,16 +91,21 @@ Do not extend it into the real tool.
    variable"* or a small formula/function icon) at the right edge of the
    text box to switch into formula-editing mode, then enter:
    ```
-   {"attachmentReceived": !IsBlank(Topic.TestFile), "fileName": If(IsBlank(Topic.TestFile), "none", Topic.TestFile.Name), "fileSizeBytes": If(IsBlank(Topic.TestFile), 0, Topic.TestFile.Size)}
+   "attachmentReceived=" & !IsBlank(Topic.TestFile)
    ```
-   As you type `Topic.TestFile`, the formula bar's autocomplete should
-   offer property suggestions after the dot (`.Name`, `.Size`, etc.) — use
-   whatever it actually offers if it differs from `.Name`/`.Size` in your
-   version; the point of the PoC is partly to discover real property names
-   too. If the formula bar rejects the whole expression as invalid syntax,
-   simplify it first to just `Topic.TestFile.Name` alone to confirm the
-   variable and property access work, then rebuild the JSON-shaped string
-   around it once you know the right property names.
+   **Do not attempt `Topic.TestFile.Name` or `.Size`.** Confirmed against a
+   real tenant: the File-entity Question node produces a **Blob** value,
+   and Blobs don't support dot-property access at all (`.Name`/`.Size`
+   both error with *"The '.' operator cannot be used on Blob values"*). No
+   file metadata is available through this variable — a blank/non-blank
+   check via `IsBlank()` is the only thing to rely on, which is also all
+   this PoC actually needs to answer question 1.
+   
+   (An earlier draft of this guide tried to build a JSON-shaped reply with
+   quoted keys, e.g. `{"attachmentReceived": ...}` — that also fails, with
+   *"Unexpected characters... where 'Ident' is expected"*, because Power
+   Fx's `{ }` is record syntax with bare identifier keys, not JSON syntax
+   with quoted keys. The plain string above sidesteps both problems.)
 8. Click **Save** (top-right of the canvas, or it may autosave — look for
    a "Saved" indicator).
 9. Click **Publish** (top-right of the agent workspace) to publish this
@@ -259,8 +264,8 @@ Do not extend it into the real tool.
 
 | What you see | What it means | Next step |
 |---|---|---|
-| Teams message with `"attachmentReceived": true` and a real file name/size | The attachment made it from Execute Agent into the topic, and a Question node with File entity auto-resolved it without prompting. | Question 1 is answered — production topic can use the same pattern. Move to question 2's result below. |
-| Teams message containing the literal string `NO_ATTACHMENT_AUTO_RESOLVED` | The Question node had to ask — the attachment did **not** auto-satisfy it from the triggering activity. | Question 1 has a different answer than hoped. The production topic will need to read the file from somewhere other than a Question node — worth checking Copilot Studio docs/support for how a topic accesses `System.Activity.Attachments` (or equivalent) directly, since a mid-dialog prompt won't work with a single synchronous Execute-Agent-and-wait call anyway. |
+| Teams message with `attachmentReceived=true` | The attachment made it from Execute Agent into the topic, and a Question node with File entity auto-resolved it without prompting. | Question 1 is answered — production topic can use the same pattern (though note the file arrives as a Blob with no accessible name/size metadata via Power Fx — the production design will need to account for that). Move to question 2's result below. |
+| Teams message with `attachmentReceived=false`, or containing the literal string `NO_ATTACHMENT_AUTO_RESOLVED` | The Question node had to ask, or resolved to nothing — the attachment did **not** auto-satisfy it from the triggering activity. | Question 1 has a different answer than hoped. The production topic will need to read the file from somewhere other than a Question node — worth checking Copilot Studio docs/support for how a topic accesses `System.Activity.Attachments` (or equivalent) directly, since a mid-dialog prompt won't work with a single synchronous Execute-Agent-and-wait call anyway. |
 | No Teams message at all, flow run history shows `Execute_Agent_And_Wait` failed | Either the agent/topic reference is wrong, or (if you got a specific policy/connection error) this could be the same DLP concern from the trigger-inversion work — check the error message before assuming it's a build mistake. | Fix the referenced agent/topic name, or escalate to your Power Platform admin if it looks like a policy block. |
 | `Post_Raw_Result_To_Teams` arrives but `Post_Parsed_Result_To_Teams` never does | `Execute Agent and wait`'s response does **not** have a usable `lastResponse` field (or its content isn't valid JSON) — the raw-response message tells you the actual field name to use instead. | Re-read the raw response message, identify the real field holding the topic's reply text, and use that field name (not `lastResponse`) in the production flow's parse step. |
 | Both Teams messages arrive, with matching content | Both questions are answered favorably — Execute Agent successfully round-trips a file and a text reply, and `lastResponse` really is the field. | Tell me what you saw and I'll rebuild the production flow/topic around the confirmed real mechanics, instead of the two incorrect designs before this one. |

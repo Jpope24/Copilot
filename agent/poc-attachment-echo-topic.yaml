@@ -49,7 +49,12 @@ triggers:
           the flow's result, the Question node had to ask instead of
           finding an attachment already present on the triggering message.
 
+      # Confirmed against a real tenant: the File-entity Question node
+      # produces a Blob value, and Blobs don't support dot-property access
+      # (.Name / .Size both error with "'.' operator cannot be used on Blob
+      # values"). No file metadata is available through this variable —
+      # only a blank/non-blank check, which is all this PoC actually needs.
       - kind: SendActivity
         id: echoResult
         activity: >
-          {"attachmentReceived": ${!IsBlank(topic.TestFile)}, "fileName": "${If(IsBlank(topic.TestFile), "none", topic.TestFile.name)}", "fileSizeBytes": ${If(IsBlank(topic.TestFile), 0, topic.TestFile.size)}}
+          attachmentReceived=${!IsBlank(topic.TestFile)}
