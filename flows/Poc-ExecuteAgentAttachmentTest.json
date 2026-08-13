@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
   "_meta": {
     "flowName": "Poc-ExecuteAgentAttachmentTest",
-    "description": "DISPOSABLE proof-of-concept flow. Confirms two things before the production Appraisal Review Extractor flow/topic are rebuilt around Execute Agent: (1) whether a file attached via Execute Agent's advanced 'attachments' parameter can actually be read inside a Copilot Studio topic, and (2) the real shape of Execute Agent and wait's response — is there really a 'lastResponse' field, does it need json() to parse, what else is on the response body. This flow deliberately surfaces the RAW response alongside the assumed parse, so a single test run answers the question even if the 'lastResponse' assumption turns out wrong. Delete this flow, agent/poc-attachment-echo-topic.yaml, and the throwaway PoC agent once both questions are answered.",
+    "description": "DISPOSABLE proof-of-concept flow. Confirms two things before the production Appraisal Review Extractor flow/topic are rebuilt around Execute Agent: (1) whether a file attached via Execute Agent's advanced 'attachments' parameter can actually be read inside a Copilot Studio topic, and (2) the real shape of Execute Agent and wait's response. QUESTION 2 IS NOW ANSWERED against a real tenant: the connector call succeeds, 'lastResponse' is the correct field name, and it arrives as an already-parsed Object requiring no json() step. Question 1's answer is whatever 'attachmentReceived=' value the raw-response message shows. Delete this flow, agent/poc-attachment-echo-topic.yaml, and the throwaway PoC agent once both questions are answered.",
     "version": "poc-1",
     "connectors": [
       "Microsoft Copilot Studio (shared_CopilotStudio or your tenant's equivalent connector id) — Execute Agent and wait, against a THROWAWAY PoC agent, not the production one",
@@ -66,11 +66,11 @@
       "inputs": "@body('Execute_Agent_And_Wait')"
     },
 
-    "Attempt_Parse_LastResponse": {
+    "Extract_LastResponse": {
       "type": "Compose",
-      "description": "Best-effort attempt at the pattern found in secondhand research: json(...?['lastResponse']). Deliberately built off Compose_Raw_Response's already-resolved output (outputs(), since that's a Compose action) rather than re-referencing the Execute Agent and wait connector action a second time by name — one less place to introduce a typo. If this action fails in run history, that itself is informative — it means either the field isn't called lastResponse, or its content wasn't valid JSON text. Check Compose_Raw_Response's output in that case rather than trying to fix this expression blindly.",
+      "description": "CONFIRMED against a real tenant: 'lastResponse' IS the correct field name on Execute Agent and wait's response, and it arrives as an already-parsed Object — NOT a JSON string. An earlier version of this action wrapped it in json(), which failed with \"the template language function 'json' expects its parameter to be a string or an XML. The provided value is of type 'Object'\". No parsing step is needed; reference the field directly. Carry this finding into the production flow — it removes a step the earlier designs assumed was necessary.",
       "runAfter": { "Compose_Raw_Response": ["Succeeded"] },
-      "inputs": "@json(outputs('Compose_Raw_Response')?['lastResponse'])"
+      "inputs": "@outputs('Compose_Raw_Response')?['lastResponse']"
     },
 
     "Post_Raw_Result_To_Teams": {
@@ -91,10 +91,10 @@
       }
     },
 
-    "Post_Parsed_Result_To_Teams": {
+    "Post_LastResponse_To_Teams": {
       "type": "ApiConnection",
-      "description": "Separate, independent post — only fires if Attempt_Parse_LastResponse actually succeeded. If this message never arrives but Post_Raw_Result_To_Teams's does, that itself is the finding: 'lastResponse' isn't the real field, or its content isn't valid JSON text. Check the raw response message for the actual field name to use instead.",
-      "runAfter": { "Attempt_Parse_LastResponse": ["Succeeded"] },
+      "description": "Separate, independent post showing just the lastResponse field on its own — the topic's actual reply text, isolated from the rest of the response envelope.",
+      "runAfter": { "Extract_LastResponse": ["Succeeded"] },
       "inputs": {
         "host": {
           "connection": { "name": "@parameters('$connections')['shared_teams']['connectionId']" }
@@ -104,7 +104,7 @@
         "body": {
           "poster": "Flow bot",
           "location": "@parameters('notificationChannelId')",
-          "body": "@concat('PoC parsed lastResponse: ', string(outputs('Attempt_Parse_LastResponse')))"
+          "body": "@concat('PoC lastResponse field: ', string(outputs('Extract_LastResponse')))"
         }
       }
     }

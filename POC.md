@@ -9,10 +9,12 @@ got wrong.
 
 1. **Can a file get from a Power Automate flow into a Copilot Studio topic
    via Execute Agent's attachments, and how does the topic actually read
-   it?**
-2. **What does Execute Agent and wait's response really look like** — is
+   it?** — *still open; see "Reading the results" below.*
+2. ~~**What does Execute Agent and wait's response really look like** — is
    there a `lastResponse` field, does it need `json()` to parse, what else
-   is on it?
+   is on it?~~ — **ANSWERED**: the call works, `lastResponse` is the
+   correct field, and it's an already-parsed Object needing no `json()`.
+   Details under "Already answered" below.
 
 This is deliberately the smallest possible build to answer those two
 questions — not a preview of the production design. **Delete everything
@@ -189,12 +191,18 @@ Do not extend it into the real tool.
      the dynamic content list) — not one specific field. This captures
      everything so you can see real field names.
 
-   **Action 4 — Compose (parse attempt)**
-   - **+ New step** → **Compose**. Rename to `Attempt_Parse_LastResponse`.
+   **Action 4 — Compose (isolate lastResponse)**
+   - **+ New step** → **Compose**. Rename to `Extract_LastResponse`.
    - Inputs: switch to **Expression**, enter:
      ```
-     json(outputs('Compose_Raw_Response')?['lastResponse'])
+     outputs('Compose_Raw_Response')?['lastResponse']
      ```
+     **No `json()` wrapper** — confirmed against a real tenant that
+     `lastResponse` arrives as an already-parsed Object, not a JSON string.
+     Wrapping it in `json()` fails with *"the template language function
+     'json' expects its parameter to be a string or an XML. The provided
+     value is of type 'Object'."*
+     
      Note this references **`Compose_Raw_Response` (Action 3)**, not the
      Execute Agent and wait connector action directly — `outputs()`, not
      `body()`, since `Compose_Raw_Response` is a Compose step. Building off
@@ -217,25 +225,20 @@ Do not extend it into the real tool.
      ```
    - Rename this action to `Post_Raw_Result_To_Teams`.
 
-   **Action 6 — Teams: parsed result**
+   **Action 6 — Teams: isolated lastResponse**
    - **+ New step** → **Post message in a channel** again, same
      Team/Channel.
    - Message:
      ```
-     concat('PoC parsed lastResponse: ', string(outputs('Attempt_Parse_LastResponse')))
+     concat('PoC lastResponse field: ', string(outputs('Extract_LastResponse')))
      ```
-   - Rename to `Post_Parsed_Result_To_Teams`.
-   - **This action needs a specific "run after" configuration.** By
-     default, Power Automate only runs an action if everything before it
-     succeeded — that default is actually exactly what you want here, so
-     you can usually leave it alone. Just confirm it: click the **"..."**
-     menu on this action's card → **Configure run after**. You should see
-     `Attempt_Parse_LastResponse` listed with only **"is successful"**
-     checked, and **"has failed," "is skipped,"** and **"has timed out"**
-     all unchecked. If `Attempt_Parse_LastResponse` fails (Action 4), this
-     action simply won't run at all — and that absence is itself the
-     answer to question 2 (see the results table below), so don't check
-     the "has failed" box to try to force a message out of it.
+   - Rename to `Post_LastResponse_To_Teams`.
+   - Leave the default "run after" configuration alone (runs only if
+     everything before it succeeded). This message shows the topic's reply
+     text isolated from the rest of the response envelope; Action 5's
+     message shows the whole envelope. Between the two you can see both
+     what the topic said and what else the connector returned alongside
+     it.
 6. Click **Save** (top-right).
 7. **Share the flow with yourself** so it appears in Teams: **"..."** on
    the flow → **Share** (or open the flow's **Details** page → **Share**),
@@ -267,13 +270,34 @@ Do not extend it into the real tool.
 
 ## Reading the results
 
-| What you see | What it means | Next step |
+### Already answered (confirmed against a real tenant)
+
+**Question 2 is settled.** A test run reached `Extract_LastResponse`, which
+means:
+
+- The **Execute Agent and wait connector call succeeded** — it was not
+  DLP-blocked in this tenant, and the agent/topic reference resolved.
+- **`lastResponse` is the correct field name** on the response.
+- **It arrives as an already-parsed Object, not a JSON string** — no
+  `json()` parsing step is needed (attempting one fails outright). This
+  simplifies the production flow versus what earlier designs assumed.
+
+Also confirmed along the way, from building the topic:
+
+- The Question node's **File entity produces a Blob** value, which does
+  **not** support dot-property access — no `.Name`, no `.Size`. Only
+  `IsBlank()`-style checks work on it. The production design has to
+  account for having no file metadata available inside the topic.
+
+### Still open — question 1
+
+Read the `Post_Raw_Result_To_Teams` message from your run:
+
+| What the message shows | What it means | Next step |
 |---|---|---|
-| Teams message with `attachmentReceived=true` | The attachment made it from Execute Agent into the topic, and a Question node with File entity auto-resolved it without prompting. | Question 1 is answered — production topic can use the same pattern (though note the file arrives as a Blob with no accessible name/size metadata via Power Fx — the production design will need to account for that). Move to question 2's result below. |
-| Teams message with `attachmentReceived=false`, or containing the literal string `NO_ATTACHMENT_AUTO_RESOLVED` | The Question node had to ask, or resolved to nothing — the attachment did **not** auto-satisfy it from the triggering activity. | Question 1 has a different answer than hoped. The production topic will need to read the file from somewhere other than a Question node — worth checking Copilot Studio docs/support for how a topic accesses `System.Activity.Attachments` (or equivalent) directly, since a mid-dialog prompt won't work with a single synchronous Execute-Agent-and-wait call anyway. |
-| No Teams message at all, flow run history shows `Execute_Agent_And_Wait` failed | Either the agent/topic reference is wrong, or (if you got a specific policy/connection error) this could be the same DLP concern from the trigger-inversion work — check the error message before assuming it's a build mistake. | Fix the referenced agent/topic name, or escalate to your Power Platform admin if it looks like a policy block. |
-| `Post_Raw_Result_To_Teams` arrives but `Post_Parsed_Result_To_Teams` never does | `Execute Agent and wait`'s response does **not** have a usable `lastResponse` field (or its content isn't valid JSON) — the raw-response message tells you the actual field name to use instead. | Re-read the raw response message, identify the real field holding the topic's reply text, and use that field name (not `lastResponse`) in the production flow's parse step. |
-| Both Teams messages arrive, with matching content | Both questions are answered favorably — Execute Agent successfully round-trips a file and a text reply, and `lastResponse` really is the field. | Tell me what you saw and I'll rebuild the production flow/topic around the confirmed real mechanics, instead of the two incorrect designs before this one. |
+| `attachmentReceived=true` | The attachment made it from Execute Agent into the topic, and a Question node with File entity auto-resolved it without prompting. | Question 1 answered favorably — the production topic can use this pattern (accounting for the Blob/no-metadata constraint above). Tell me and I'll rebuild the production flow/topic around the confirmed mechanics. |
+| `attachmentReceived=false`, or the literal string `NO_ATTACHMENT_AUTO_RESOLVED` | The Question node had to ask, or resolved to nothing — the attachment did **not** auto-satisfy it from the triggering activity. | The production topic will need to read the file from somewhere other than a Question node — worth checking Copilot Studio docs/support for how a topic accesses `System.Activity.Attachments` (or equivalent) directly, since a mid-dialog prompt won't work with a single synchronous Execute-Agent-and-wait call anyway. Tell me what you saw and we'll work out the alternative. |
+| No Teams message at all, and run history shows `Execute_Agent_And_Wait` failed | Contradicts the confirmed finding above — most likely a different build issue on a subsequent run (wrong agent/topic reference, unpublished agent) rather than a connector problem. | Check the specific error in run history; re-confirm the agent is published and the referenced topic name matches. |
 
 ## When you're done
 
