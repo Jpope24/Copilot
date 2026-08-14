@@ -296,20 +296,157 @@ list, action **Predict**, or your tenant's equivalent "Run a prompt" action)
   `flows/Shared-AppraisalReviewOrchestrator.json` →
   `actions.Condition_Is_Valid.actions.Parse_Extraction_Result.inputs.schema`
 
-**Actions 6–11** — Compose `Format_Appraiser_Names`, Compose
-`Format_City_State`, Compose `Build_Destination_File_Name`, SharePoint
-"Copy file", SharePoint "Get file properties" (of the new copy), Excel
-Online "Run script" (script parameters straight off `Parse JSON`'s output —
-see `actions...Populate_Review_Cells` in the reference file for every
-expression), SharePoint "Create sharing link." Configuration notes match
-every prior version of this guide for these same standard actions.
+**Action 6 — Compose (`Format_Appraiser_Names`)**
+- **+ New step** → search **"Compose"** → select the **Compose** action
+  (Data Operation connector).
+- Rename it (**"..."** on the action card → **Rename**) to
+  `Format_Appraiser_Names`.
+- Click into the **Inputs** field, switch to the **Expression** tab (next
+  to Dynamic content), and enter exactly:
+  ```
+  join(coalesce(body('Parse_JSON')?['appraiserNames'], createArray('Not Stated')), '; ')
+  ```
+  Replace `Parse_JSON` with the **actual name** your Parse JSON action from
+  Action 5 shows in the designer — if you renamed it to
+  `Parse_Extraction_Result` (matching the reference file), use that
+  instead. Click **OK**/**Add**.
+- This joins the `appraiserNames` array (e.g. `["Jane R. Whitfield, MAI"]`)
+  into a single semicolon-separated string for the Excel cell, since the
+  cell holds text, not an array.
 
-**Action 12 — Teams: "Post message in a channel" (`Post_Success_To_Teams`)**
-- Team / Channel: your **notification channel** (Part A).
-- Message: see
-  `actions.Condition_Is_Valid.actions.Post_Success_To_Teams.inputs.body.body`
-  for the exact expression — states what was created, flags missing
-  fields, includes the workbook link.
+**Action 7 — Compose (`Format_City_State`)**
+- **+ New step** → **Compose**. Rename to `Format_City_State`.
+- Inputs, **Expression** tab:
+  ```
+  concat(coalesce(body('Parse_Extraction_Result')?['city'], 'Not Stated'), ', ', coalesce(body('Parse_Extraction_Result')?['state'], 'Not Stated'))
+  ```
+  (again, substitute your Parse JSON action's real name if different)
+- Produces the combined "City, State" text for cell `F24`.
+
+**Action 8 — Compose (`Build_Destination_File_Name`)**
+- **+ New step** → **Compose**. Rename to `Build_Destination_File_Name`.
+- Inputs, **Expression** tab:
+  ```
+  concat('Appraisal Review - ', replace(replace(replace(replace(coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Address Not Stated'), '/', '-'), '\', '-'), ':', '-'), '?', ''), ' - ', formatDateTime(utcNow(), 'yyyyMMdd-HHmmss'), '.xlsx')
+  ```
+  This builds a filename like `Appraisal Review - 4200 Colony Road -
+  20260814-091530.xlsx` — the nested `replace()` calls strip characters
+  that aren't valid in a SharePoint file name (`/`, `\`, `:`, `?`) out of
+  the street address before using it, and the timestamp suffix guarantees
+  two runs on the same day never collide.
+
+**Action 9 — SharePoint: "Copy file" (`Copy_Template_To_New_File`)**
+- **+ New step** → search **"SharePoint"** → select **Copy file**.
+- You'll likely be prompted to create/select a connection the first time —
+  sign in with an account that has the access described in Part A step 4.
+- Fill in the action's fields — for each, switch to the field's
+  **Expression** tab where noted, otherwise these are plain values:
+  - **Site Address**: type or paste your **Template site URL** directly
+    (from Part A) — e.g. `https://yourbank.sharepoint.com/sites/CreditRisk`.
+  - **File to Copy**: your **Template file path** (from Part A) — e.g.
+    `/Shared Documents/Templates/Appraisal Review Template.xlsx` (the
+    picker may want this relative to the site, without repeating the site
+    URL — use whichever format the designer's own file picker resolves
+    without an error).
+  - **Destination Site Address**: your **Destination site URL** (Part A).
+  - **Destination Folder**: your **Destination folder path** (Part A).
+  - **Destination File Name** (if your connector version exposes this
+    field — not all do): **Expression** tab,
+    `outputs('Build_Destination_File_Name')`.
+  - **If another file already exists**: set to **Rename** — a safety net;
+    the timestamp in the filename already makes a real collision very
+    unlikely.
+- Rename the action to `Copy_Template_To_New_File`.
+
+**Action 10 — SharePoint: "Get file properties" (`Get_New_File_Properties`)**
+- **+ New step** → **SharePoint** → **Get file properties**.
+- **Site Address**: your **Destination site URL** (same as above).
+- **File Identifier**: switch to **Expression**, enter:
+  ```
+  body('Copy_Template_To_New_File')?['destinationFilePath']
+  ```
+  (substitute your actual Copy File action's name if you didn't rename it
+  to match). This resolves the drive/item identifiers the next two actions
+  need — Copy File's own output only gives you a path, not the IDs
+  required to run a script or create a link against the new file.
+- Rename to `Get_New_File_Properties`.
+
+**Action 11 — Excel Online (Business): "Run script" (`Populate_Review_Cells`)**
+- **+ New step** → search **"Excel Online (Business)"** → select
+  **Run script**.
+- **Location**: **SharePoint Site**.
+- **Document Library**: pick the library containing your **Destination
+  site URL**'s folder.
+- **File**: click the **Dynamic content** picker and select the file
+  identifier output from **Get_New_File_Properties** (Action 10) — do
+  **not** pick a fixed/browsed file here, since it must resolve to
+  whichever new copy this specific run just created, not the template.
+- **Script**: select `PopulateAppraisalReviewCells` from the dropdown —
+  it only appears here if Part C (adding the Office Script to the
+  template) was completed on this exact file or the template it was
+  copied from.
+- **Script parameters**: this is the long part — the script has 17
+  parameters, one per extracted field, and each needs an expression. For
+  each parameter field shown in the designer, switch to **Expression** and
+  enter the matching line below (substitute your actual Parse JSON action
+  name for `Parse_Extraction_Result` throughout if different):
+  ```
+  occupancyType:              coalesce(body('Parse_Extraction_Result')?['occupancyType'], 'Not Stated')
+  cityState:                  outputs('Format_City_State')
+  streetAddress:               coalesce(body('Parse_Extraction_Result')?['streetAddress'], 'Not Stated')
+  collateralAnalysisValue:    string(coalesce(body('Parse_Extraction_Result')?['collateralAnalysisValue'], 'Not Stated'))
+  valuationType:               coalesce(body('Parse_Extraction_Result')?['valuationType'], 'Not Stated')
+  appraiserNames:              outputs('Format_Appraiser_Names')
+  appraisalDate:               coalesce(body('Parse_Extraction_Result')?['appraisalDate'], 'Not Stated')
+  reviewerName:                coalesce(body('Parse_Extraction_Result')?['reviewerName'], 'Not Stated')
+  reviewDate:                  coalesce(body('Parse_Extraction_Result')?['reviewDate'], 'Not Stated')
+  grossBuildingAreaSqFt:       string(coalesce(body('Parse_Extraction_Result')?['grossBuildingAreaSqFt'], 'Not Stated'))
+  netRentableAreaSqFt:         string(coalesce(body('Parse_Extraction_Result')?['netRentableAreaSqFt'], 'Not Stated'))
+  numberOfBuildings:           string(coalesce(body('Parse_Extraction_Result')?['numberOfBuildings'], 'Not Stated'))
+  yearBuiltOrRemodeled:        string(coalesce(body('Parse_Extraction_Result')?['yearBuiltOrRemodeled'], 'Not Stated'))
+  remainingEconomicLifeYears:  string(coalesce(body('Parse_Extraction_Result')?['remainingEconomicLifeYears'], 'Not Stated'))
+  generalCondition:            coalesce(body('Parse_Extraction_Result')?['generalCondition'], 'Not Stated')
+  marketExposureTime:          coalesce(body('Parse_Extraction_Result')?['marketExposureTime'], 'Not Stated')
+  meetsHighestAndBestUse:      coalesce(body('Parse_Extraction_Result')?['meetsHighestAndBestUse'], 'Not Stated')
+  ```
+  Every value is wrapped in `coalesce(..., 'Not Stated')` so a field the
+  model couldn't find never breaks the action — it lands in the cell as
+  the literal text `Not Stated` instead. The five numeric-looking fields
+  (`collateralAnalysisValue`, `grossBuildingAreaSqFt`,
+  `netRentableAreaSqFt`, `numberOfBuildings`,
+  `remainingEconomicLifeYears`) are additionally wrapped in `string(...)`
+  — every one of the script's 17 parameters is typed as Text on the Office
+  Script side (see `flows/scripts/PopulateAppraisalReviewCells.ts`), so a
+  raw number here would be a type mismatch; the script itself decides
+  whether to write the cell as a number, date, or text once it receives
+  the string.
+- Rename the action to `Populate_Review_Cells`.
+
+**Action 12 — SharePoint: "Create sharing link for a file or folder"
+(`Create_Sharing_Link`)**
+- **+ New step** → **SharePoint** → **Create sharing link for a file or
+  folder**.
+- **Site Address**: your **Destination site URL**.
+- **File Identifier**: **Dynamic content**, the same identifier output
+  from **Get_New_File_Properties** (Action 10) you used in Action 11.
+- **Link Type**: **View**.
+- **Link Scope**: **Organization** (adjust to your bank's data
+  classification policy if a different scope is required).
+- Rename to `Create_Sharing_Link`.
+
+**Action 13 — Teams: "Post message in a channel" (`Post_Success_To_Teams`)**
+- **+ New step** → search **"Teams"** → **Post message in a channel**.
+- **Team** / **Channel**: your **notification channel** (Part A) — pick it
+  from the dropdowns, or if your connector version wants a raw channel ID
+  instead of a picker, use the ID you captured in Part A step 3.
+- **Message**: switch to **Expression**, enter:
+  ```
+  concat('Created ', outputs('Build_Destination_File_Name'), ' from ', triggerBody()?['document']?['name'], '. ', if(equals(body('Parse_Extraction_Result')?['needsManualReview'], true), concat('Needs manual verification: ', join(coalesce(body('Parse_Extraction_Result')?['missingFields'], createArray()), ', '), '. ', coalesce(body('Parse_Extraction_Result')?['extractionNotes'], '')), 'All 17 fields were extracted with no flags.'), ' Open the workbook: ', body('Create_Sharing_Link')?['link'])
+  ```
+  This states what was created, flags any missing fields plus the model's
+  own extraction notes when `needsManualReview` is `true`, and always
+  includes the workbook link at the end.
+- Rename to `Post_Success_To_Teams`.
 
 **If Action 3 was no (upload failed validation) — `Post_Rejection_To_Teams`:**
 same Teams action, explaining the upload was rejected. AI Builder is never
